@@ -1,0 +1,181 @@
+{
+  "schemaVersion": "0.1",
+  "documentVersion": "0.4",
+  "updatedAt": "2026-08-08",
+  "language": {
+    "design": "zh-CN",
+    "formalWriting": "en"
+  },
+  "title": {
+    "en": "AI-Assisted Product Descriptions and Seller-Contact Intentions in C2C Second-Hand Marketplaces: Product-Information Authenticity, Provenance Transparency, and Seller Reputation",
+    "zh": "AI辅助二手商品文案如何影响C2C买家联系卖家意向：商品信息真实性、来源透明度与卖家声誉"
+  },
+  "scope": {
+    "intervention": "AI-assisted product-description generation",
+    "market": "online C2C second-hand marketplace",
+    "country": "Australia",
+    "productCategory": "used smartphones",
+    "primaryOutcome": "seller_contact_intention",
+    "secondaryOutcome": "purchase_intention",
+    "notActualConversion": true
+  },
+  "epistemicStatuses": [
+    "design_decision",
+    "hypothesis_to_test",
+    "candidate_source_unverified",
+    "main_document_metadata_needs_independent_check",
+    "planning_parameter_needs_calibration",
+    "research_limitation"
+  ],
+  "researchQuestions": [
+    {
+      "id": "RQ1",
+      "text": "How do truthfully disclosed listing-production modes (seller-written, AI-assisted, and AI-generated) affect buyers' seller-contact and purchase intentions in C2C second-hand marketplaces?"
+    },
+    {
+      "id": "RQ2",
+      "text": "To what extent does perceived product-information authenticity explain the effect of listing-production mode on seller-contact intention?"
+    },
+    {
+      "id": "RQ3",
+      "text": "How does accountable AI-provenance transparency interact with seller reputation to affect perceived product-information authenticity and seller-contact intention when listing content is held constant?"
+    },
+    {
+      "id": "RQ4",
+      "text": "Do information diagnosticity and seller trust provide credible rival explanations beyond the focal product-information-authenticity mechanism?"
+    }
+  ],
+  "constructs": [
+    {
+      "id": "seller_contact_intention",
+      "role": "primary_outcome",
+      "definition": "Intention to contact the seller, ask for details, or view contact options in the presented scenario.",
+      "sourceStatus": "candidate_source_unverified"
+    },
+    {
+      "id": "purchase_intention",
+      "role": "secondary_outcome",
+      "definition": "Intention to consider or attempt to purchase the displayed item.",
+      "sourceStatus": "candidate_source_unverified"
+    },
+    {
+      "id": "product_information_authenticity",
+      "role": "focal_mediator",
+      "definition": "The extent to which the description is perceived to truthfully correspond to the item's actual condition and reflect the seller's first-hand knowledge.",
+      "sourceStatus": "construct_source_gap"
+    },
+    {
+      "id": "seller_trust",
+      "role": "rival_mechanism",
+      "definition": "Willingness to rely on the seller under uncertainty based on perceived honesty and dependability.",
+      "sourceStatus": "candidate_source_unverified"
+    },
+    {
+      "id": "information_diagnosticity",
+      "role": "rival_mechanism",
+      "definition": "The extent to which the description helps the buyer judge item condition, fit, and transaction value.",
+      "sourceStatus": "candidate_source_unverified"
+    },
+    {
+      "id": "ai_literacy",
+      "role": "exploratory_measured_moderator",
+      "definition": "The participant's ability to understand AI capabilities, limitations, and appropriate use.",
+      "sourceStatus": "candidate_source_unverified"
+    }
+  ],
+  "experiments": [
+    {
+      "id": "E1",
+      "name": "Truthfully disclosed production-mode experiment",
+      "design": "three-arm_between_subjects",
+      "conditions": [
+        "seller_written",
+        "ai_assisted",
+        "ai_generated"
+      ],
+      "stimulusCount": 12,
+      "stimulusSource": "consenting experienced C2C sellers contribute de-identified facts and photos for owned used smartphones and audit all source labels",
+      "primaryEstimand": "mean(contact_intention|ai_assisted)-mean(contact_intention|seller_written)",
+      "analysisPrinciple": "intention_to_treat",
+      "deceptionRequired": false,
+      "hypotheses": ["H1a", "H1b", "H2", "H3a", "H3b"]
+    },
+    {
+      "id": "E2",
+      "name": "Accountable provenance transparency by seller reputation experiment",
+      "design": "2x2_between_subjects",
+      "factors": {
+        "provenanceTransparency": ["basic_ai_assisted", "accountable_ai_assisted_seller_verified"],
+        "sellerReputation": ["established_high", "new_no_history"]
+      },
+      "contentHeldIdentical": true,
+      "stimulusCount": 12,
+      "stimulusSource": "the verified AI-assisted versions from the separately consented stimulus-contributor set",
+      "primaryEstimand": "[(accountable-basic)|new]-[(accountable-basic)|established] on seller_contact_intention",
+      "analysisPrinciple": "intention_to_treat",
+      "deceptionRequired": false,
+      "hypotheses": ["H4", "H5", "H6", "H7"]
+    }
+  ],
+  "hypotheses": [
+    {"id": "H1a", "status": "hypothesis_to_test", "experiment": "E1", "text": "AI-generated descriptions reduce product-information authenticity relative to seller-written descriptions."},
+    {"id": "H1b", "status": "hypothesis_to_test", "experiment": "E1", "text": "AI-generated descriptions reduce product-information authenticity relative to AI-assisted descriptions."},
+    {"id": "H2", "status": "hypothesis_to_test", "experiment": "E1", "text": "Product-information authenticity is positively associated with seller-contact intention."},
+    {"id": "H3a", "status": "hypothesis_to_test", "experiment": "E1", "text": "Product-information authenticity statistically mediates the AI-generated versus seller-written contrast on seller-contact intention."},
+    {"id": "H3b", "status": "hypothesis_to_test", "experiment": "E1", "text": "Product-information authenticity statistically mediates the AI-generated versus AI-assisted contrast on seller-contact intention."},
+    {"id": "H4", "status": "hypothesis_to_test", "experiment": "E2", "text": "Accountable provenance transparency increases product-information authenticity relative to a basic AI-assisted label."},
+    {"id": "H5", "status": "hypothesis_to_test", "experiment": "E2", "text": "Established high reputation increases seller-contact intention relative to no reputation history."},
+    {"id": "H6", "status": "hypothesis_to_test", "experiment": "E2", "text": "The effect of accountable transparency on authenticity is stronger for a new seller than for an established seller."},
+    {"id": "H7", "status": "hypothesis_to_test", "experiment": "E2", "text": "The indirect effect of accountable transparency on contact intention through authenticity is stronger for a new seller."}
+  ],
+  "mixedMethodsSequence": [
+    "systematic_evidence_review",
+    "buyer_and_seller_interviews",
+    "stimulus_and_measurement_pretest",
+    "experiment_1",
+    "experiment_2",
+    "joint_display_integration"
+  ],
+  "pretestGate": {
+    "cognitiveInterviewParticipants": "8-12",
+    "minimumAnalyzableOnlinePretest": 180,
+    "maxStimuliPerPretestParticipant": 4,
+    "factErrorsAllowed": 0,
+    "productionModeRecognitionMinimum": 0.8,
+    "reputationRecognitionMinimum": 0.85,
+    "realismMedianMinimum": 5,
+    "accountabilityContrast95CiExcludesZero": true,
+    "reusePretestParticipantsInMainExperiments": false
+  },
+  "powerAnalysis": {
+    "method": "monte_carlo_simulation",
+    "minimumPower": 0.8,
+    "reportAlsoAtPower": 0.9,
+    "alpha": 0.05,
+    "simulationRunsMinimum": 10000,
+    "attritionReservePlanningValue": 0.15,
+    "planningEffectsNotEvidence": {
+      "experiment1_d": 0.3,
+      "experiment2_f": 0.15
+    },
+    "finalSampleSizeStatus": "needs_literature_pretest_and_simulation"
+  },
+  "ethics": {
+    "approval": "Obtain approval through the administering Australian institution's applicable HREC or authorised low-risk pathway before recruitment or data collection.",
+    "usesDeception": false,
+    "stimulusContributorsRequireSeparateConsent": true,
+    "externalAIReceivesIdentifiableDataByDefault": false,
+    "platformFieldStudyRequiresNewReview": true,
+    "institutionSpecificRulesStatus": "needs_target_university_verification"
+  },
+  "verificationGaps": [
+    "direct-overlap and adjacent-literature search",
+    "theory-source and online-market signaling bridge verification",
+    "product-information-authenticity measurement source or scale development",
+    "all candidate scale items metadata permissions and construct fit",
+    "stimulus and provenance-label pretests",
+    "SESOI variance ICC and final Monte Carlo sample size",
+    "target-university confirmation ethics and data-governance rules",
+    "recruitment budget AI-model freeze and image licensing"
+  ]
+}

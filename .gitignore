@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.next-build/
+.local/
+coverage/
+*.log
+*.tsbuildinfo
+.env*
+!.env.example
+docs/*.pdf

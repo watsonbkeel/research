@@ -1,6 +1,6 @@
 import { readWorkspace } from "./storage";
 import { validateClaims } from "./validation";
-import { listEvidenceExcerpts } from "./evidence-excerpts";
+import { effectiveVerificationStatus, listEvidenceExcerpts } from "./evidence-excerpts";
 import { readResearchPlan } from "./research-plan";
 import { hasCompletedRealAnalysis, readAnalysisRuns } from "./results";
 import { readInstitutionProfile } from "./institution";
@@ -48,9 +48,9 @@ export async function buildQualityReport(projectId = getDefaultProjectId()): Pro
   const claimValidation = validateClaims(workspace.claims, workspace.works);
   add("citation-integrity", "Registered citation integrity", claimValidation.some((issue) => issue.severity === "error") ? "error" : claimValidation.length ? "warning" : "pass", claimValidation.length ? `Citation validator reports ${claimValidation.length} issue(s).` : "No registered citation-integrity issues detected.");
   const factualClaimIds = new Set(workspace.claims.filter((claim) => claim.kind === "已发表事实").map((claim) => claim.id));
-  const claimEvidenceIds = new Set(evidenceExcerpts.filter((excerpt) => excerpt.claimId && excerpt.verificationStatus === "claim_verified").map((excerpt) => excerpt.claimId));
+  const claimEvidenceIds = new Set(evidenceExcerpts.filter((excerpt) => excerpt.claimId && effectiveVerificationStatus(excerpt) === "human_verified").map((excerpt) => excerpt.claimId));
   const unsupportedClaims = Array.from(factualClaimIds).filter((claimId) => !claimEvidenceIds.has(claimId));
-  add("claim-evidence", "Claim-level evidence coverage", unsupportedClaims.length ? "error" : "pass", unsupportedClaims.length ? `Published-fact claims without a claim-verified EvidenceExcerpt: ${unsupportedClaims.join(", ")}.` : "Every published-fact claim has a claim-verified evidence excerpt.");
+  add("claim-evidence", "Claim-level evidence coverage", unsupportedClaims.length ? "error" : "pass", unsupportedClaims.length ? `Published-fact claims without a human_verified EvidenceExcerpt: ${unsupportedClaims.join(", ")}.` : "Every published-fact claim has a human_verified evidence excerpt.");
 
   const brokenHypotheses = researchPlan.hypotheses.filter((hypothesis) => !hypothesis.englishWording || hypothesis.studyIds.length === 0 || hypothesis.constructIds.length === 0 || hypothesis.falsification.length === 0);
   add("hypothesis-traceability", "Hypothesis traceability", !researchPlan.hypotheses.length || brokenHypotheses.length ? "error" : "pass", !researchPlan.hypotheses.length ? "No structured hypotheses have been registered." : brokenHypotheses.length ? `${brokenHypotheses.length} hypothesis(es) lack wording, study, construct, or falsification condition.` : "Hypotheses link wording, studies, constructs and falsification conditions.");

@@ -30,12 +30,12 @@ export function validateClaims(claims: Claim[], works: Work[]): ValidationIssue[
 
     const weakSources = claim.citationIds
       .map((id) => worksById.get(id))
-      .filter((work) => work && ["DOI已核对", "书目信息已核对"].includes(work.status));
+      .filter((work) => work && work.bibliographicStatus !== "verified");
     if (claim.kind === "已发表事实" && weakSources.length > 0) {
       issues.push({
         claimId: claim.id,
         severity: "warning",
-        message: "该事实仅有元数据级核验，尚未定位全文论断证据。",
+        message: "该事实引用的 Work 尚未完成结构化书目核验和论断级证据定位。",
       });
     }
   }

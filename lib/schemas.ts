@@ -9,6 +9,11 @@ export const checklistUpdateSchema = z.object({
 });
 
 export const evidenceStatuses = [
+  "unverified",
+  "verified",
+  "partial_match",
+  "mismatch",
+  "failed",
   "DOI已核对",
   "书目信息已核对",
   "摘要已核对",

@@ -37,7 +37,7 @@ function makeArticleManuscript(title: string, targetJournal = ""): Manuscript {
     const chapterId = `${documentId}-chapter-${index + 1}`;
     const section: ManuscriptSection = {
       id: `${chapterId}-main`, chapterId, number: `${index + 1}.1`, title: chapterTitle, order: 0,
-      targetWords: index === 0 ? 350 : index === 4 ? 1800 : 1000, content: "", citationIds: [], claimIds: [], dependencyIds: [],
+      targetWords: index === 0 ? 350 : index === 4 ? 1800 : 1000, content: "", citationIds: [], evidenceExcerptIds: [], claimIds: [], dependencyIds: [], unsupportedStatements: [], evidenceGaps: [],
       researchStatus: "planned", status: "draft", humanEditStatus: "ai-generated", locked: false, updatedAt: timestamp,
     };
     return { id: chapterId, number: String(index + 1), title: chapterTitle, order: index, targetWords: section.targetWords, status: "planned" as const, sections: [section] };
@@ -118,7 +118,7 @@ export function assertProspectiveIntegrity(section: Pick<ManuscriptSection, "tit
   if (violation) throw new Error("预测稿不得包含已完成研究语气、样本事实或统计结果；请改写为预期方向和条件式解释。");
 }
 
-export function saveProjectSection(input: { projectId: string; documentId: string; sectionId: string; content: string; changeSummary: string; editor: string; generatedBy?: string }) {
+export function saveProjectSection(input: { projectId: string; documentId: string; sectionId: string; content: string; changeSummary: string; editor: string; generatedBy?: string; citationIds?: string[]; claimIds?: string[]; evidenceExcerptIds?: string[]; evidenceBundleId?: string; unsupportedStatements?: Array<{ statement: string; reason: string }>; evidenceGaps?: string[] }) {
   const document = getProjectDocument(input.projectId, input.documentId); if (!document) throw new Error("文档不存在。");
   const manuscript = document.manuscript;
   const section = manuscript.chapters.flatMap((chapter) => chapter.sections).find((candidate) => candidate.id === input.sectionId);
@@ -130,9 +130,10 @@ export function saveProjectSection(input: { projectId: string; documentId: strin
   const timestamp = now();
   const version: DraftVersion = {
     id: `draft-${randomUUID()}`, manuscriptId: input.documentId, sectionId: section.id, versionNumber: count.count + 1, content: input.content,
+    citationIds: input.citationIds ?? section.citationIds, claimIds: input.claimIds ?? section.claimIds, evidenceExcerptIds: input.evidenceExcerptIds ?? section.evidenceExcerptIds, evidenceBundleId: input.evidenceBundleId ?? section.evidenceBundleId, unsupportedStatements: input.unsupportedStatements ?? section.unsupportedStatements, evidenceGaps: input.evidenceGaps ?? section.evidenceGaps,
     changeSummary: input.changeSummary, editor: input.editor, generatedBy: input.generatedBy, researchStatus: section.researchStatus, manuscriptStatus: "draft", createdAt: timestamp,
   };
-  section.content = input.content; section.updatedAt = timestamp; section.generatedBy = input.generatedBy; section.generatedAt = input.generatedBy ? timestamp : section.generatedAt;
+  section.content = input.content; section.citationIds = input.citationIds ?? section.citationIds; section.claimIds = input.claimIds ?? section.claimIds; section.evidenceExcerptIds = input.evidenceExcerptIds ?? section.evidenceExcerptIds; section.evidenceBundleId = input.evidenceBundleId ?? section.evidenceBundleId; section.unsupportedStatements = input.unsupportedStatements ?? section.unsupportedStatements; section.evidenceGaps = input.evidenceGaps ?? section.evidenceGaps; section.updatedAt = timestamp; section.generatedBy = input.generatedBy; section.generatedAt = input.generatedBy ? timestamp : section.generatedAt;
   section.humanEditStatus = input.generatedBy ? "ai-generated" : "human-edited";
   manuscript.updatedAt = timestamp; manuscript.version = `v0.${Math.max(1, count.count + 1)}`;
   portfolioDatabase().prepare("INSERT INTO document_versions VALUES (?,?,?,?,?,?)").run(version.id, input.documentId, section.id, version.versionNumber, JSON.stringify(version), timestamp);

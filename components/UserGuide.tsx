@@ -41,6 +41,14 @@ const workflow = [
     icon: Search,
   },
   {
+    number: "04A",
+    title: "核验书目与全文",
+    description: "Candidate 只代表发现；完成 Crossref VerificationEvent 后才能升级 Work，再上传你有权使用的本地 PDF 并按页摘录证据。",
+    target: "literature" as const,
+    action: "查看候选与核验状态",
+    icon: ShieldCheck,
+  },
+  {
     number: "04",
     title: "审查理论与研究设计",
     description: "确认当前项目的理论来源、构念定义、Study 设计和已经锁定的项目级边界。",
@@ -116,11 +124,11 @@ export function UserGuide({ onNavigate }: { onNavigate: (target: GuideTarget) =>
       <section className="guide-detail">
         <div className="guide-detail-heading"><Database size={19} /><div><p className="eyebrow">Evidence workflow</p><h2>证据等级与写作门槛</h2></div></div>
         <div className="evidence-ladder">
-          {["DOI已核对", "书目信息已核对", "摘要已核对", "全文已阅读", "论断证据已定位"].map((status, index) => (
+          {["unverified", "verified", "partial_match", "mismatch", "human_verified"].map((status, index) => (
             <div key={status}><span>{index + 1}</span><strong>{status}</strong></div>
           ))}
         </div>
-        <p>OpenAlex 导入从候选元数据开始，不会自动提升核验等级。理论、文献综述和贡献章节必须达到“全文已阅读”或“论断证据已定位”；方法章节可以使用已锁定的研究设计。</p>
+        <p>OpenAlex、Crossref 和 Semantic Scholar 只产生 CandidateRecord。书目必须通过 VerificationEvent；全文解析和论断证据核验分别记录，只有研究者确认的 human_verified 摘录才能进入正式事实论断。PDF 只从本地上传，默认不会发送到外部模型。</p>
         <div className="guide-inline-actions">
           <button className="button secondary" type="button" onClick={() => onNavigate("literature")}><BookOpen size={16} />管理文献证据</button>
           <button className="button secondary" type="button" onClick={() => onNavigate("design")}><Network size={16} />核对研究设计</button>
@@ -136,6 +144,12 @@ export function UserGuide({ onNavigate }: { onNavigate: (target: GuideTarget) =>
           <button className="button secondary" type="button" onClick={() => onNavigate("results")}><FileText size={16} />登记分析运行</button>
           <button className="button secondary" type="button" onClick={() => onNavigate("outputs")}><FileOutput size={16} />运行输出检查</button>
         </div>
+      </section>
+
+      <section className="guide-detail">
+        <div className="guide-detail-heading"><ShieldCheck size={19} /><div><p className="eyebrow">Audit and export gates</p><h2>正式稿与草稿的区别</h2></div></div>
+        <p>章节生成先构建 SectionEvidenceBundle，再保存结构化 DraftVersion。CitationAudit 会检查 Work 核验、EvidenceExcerpt 定位、正文与参考文献一致性、撤稿和未支持论断；ConsistencyReview 会保存研究问题到分析模型的链条检查。自动审查通过不代表导师或人工批准。</p>
+        <p>普通下载是草稿导出，会显示 blocker/warning 数量；带 <code>formal=1</code> 的 Markdown、DOCX、Proposal 或 ZIP 导出在有 blocker 时返回阻断，不会生成“正式版”。</p>
       </section>
 
       <section className="guide-detail">

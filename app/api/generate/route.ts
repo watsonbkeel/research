@@ -3,7 +3,9 @@ import { callOpenAICompatible, ProviderCallError } from "@/lib/provider-client";
 import { generationRequestSchema } from "@/lib/schemas";
 import { readPrivateSettings, readWorkspace, recordGenerationAttempts } from "@/lib/storage";
 import { hasCompletedRealAnalysis } from "@/lib/results";
-import { getDefaultProjectId, getProject } from "@/lib/portfolio";
+import { getProject } from "@/lib/portfolio";
+import { ensureProjectProposal, getProjectDocument, listProjectDocuments } from "@/lib/project-documents";
+import { generateStructuredSection } from "@/lib/generation-service";
 
 export const runtime = "nodejs";
 
@@ -48,7 +50,7 @@ function makePrompt(
   policy: { outcomeInterpretation: string; forbiddenClaims: string[] },
 ) {
   const evidenceBlock = evidence
-    .map((work) => `[${work.id}] ${work.authors} (${work.year}). ${work.title}. ${work.venue}. DOI: ${work.doi ?? "none"}`)
+    .map((work) => `Work ID=${work.id}; Authors=${work.authors}; Year=${work.year}; Title=${work.title}; Venue=${work.venue}; DOI=${work.doi ?? "none"}; Bibliographic status=${work.bibliographicStatus ?? "unverified"}`)
     .join("\n");
   const designBlock = workspace.experiments
     .map((study) => `${study.name}\nDesign: ${study.design}\nObjective: ${study.objective}\nConditions: ${study.conditions.join("; ")}\nPrimary test: ${study.primaryTest}\nEthics: ${study.ethics}`)
@@ -63,20 +65,55 @@ function makePrompt(
   return `${taskInstructions[input.taskType]}\n\nRequested work:\n${requestedWork}\n\nResearch title: ${workspace.project.titleEn}\nRegistered outcome interpretation: ${policy.outcomeInterpretation}\n\nRegistered research design:\n${designBlock || "No study design has been registered yet."}\n\nAllowed evidence:\n${evidenceBlock || "No external evidence is available. Methods may rely on the registered research design only."}\n\nAdditional user context (unverified unless supported above):\n${context}\n\nRules:\n- Do not invent facts, authors, results, scales, sample sizes, DOI values, or references.\n- Cite external claims only with an allowed source ID in square brackets.\n- Describe unverified choices as planned or proposed.\n- Respect project-specific forbidden claims: ${policy.forbiddenClaims.join("; ")}.\n- Return only the requested content.`;
 }
 
+function sectionPattern(section: keyof typeof sectionNames) {
+  const patterns: Record<keyof typeof sectionNames, RegExp> = {
+    methods: /method|sampling|analysis|ethics|timeline/i,
+    background: /introduction|background|context|problem|significance/i,
+    literature_review: /literature|review|gap|novelty/i,
+    theory: /theor|conceptual|hypothes/i,
+    contribution: /contribution|implication|limitation/i,
+    results: /result|discussion/i,
+  };
+  return patterns[section];
+}
+
 export async function POST(request: Request) {
   const parsed = generationRequestSchema.safeParse(await request.json().catch(() => ({})));
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "生成请求无效。" }, { status: 400 });
   }
 
-  const projectId = parsed.data.projectId ?? getDefaultProjectId();
+  if (!parsed.data.projectId) return NextResponse.json({ error: "projectId 是必填参数；生成不能使用全局默认项目。" }, { status: 400 });
+  const projectId = parsed.data.projectId;
   const project = getProject(projectId);
   if (!project) return NextResponse.json({ error: "项目不存在。" }, { status: 404 });
+  // The legacy writing screen still posts a section name. Resolve it to the
+  // project document and use the same structured evidence-bounded service as
+  // the project document API; no free-text manuscript path is allowed here.
+  if (parsed.data.section) {
+    const document = parsed.data.documentId
+      ? getProjectDocument(projectId, parsed.data.documentId)
+      : listProjectDocuments(projectId).find((item) => item.documentType === "confirmation-proposal") ?? ensureProjectProposal(projectId);
+    if (!document) return NextResponse.json({ error: "项目文档不存在。" }, { status: 404 });
+    const section = document.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => sectionPattern(parsed.data.section!).test(item.title));
+    if (!section) return NextResponse.json({ error: "找不到对应的项目章节。" }, { status: 404 });
+    if (parsed.data.section === "results" && !hasCompletedRealAnalysis(undefined, projectId)) return NextResponse.json({ error: "Results章节已阻断：尚无完成且标记为真实数据的AnalysisRun。请先登记可复现的真实分析运行。" }, { status: 409 });
+    try {
+      const result = await generateStructuredSection({ projectId, documentId: document.id, sectionId: section.id, profileId: parsed.data.profileId, editor: "researcher" });
+      const savedSection = result.document.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => item.id === section.id);
+      return NextResponse.json({ ...result, draft: savedSection?.content ?? "", structuredDraft: result.draft });
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "结构化章节生成失败。" }, { status: 400 });
+    }
+  }
+  if (["english_academic_writing", "literature_summary", "evidence_verification", "citation_validation"].includes(parsed.data.taskType)) {
+    return NextResponse.json({ error: "该生成任务必须绑定 projectId、documentId 和具体章节，并通过结构化证据包执行。" }, { status: 400 });
+  }
   const [workspace, settings] = await Promise.all([readWorkspace(projectId), readPrivateSettings()]);
   if (parsed.data.section === "results" && !hasCompletedRealAnalysis(undefined, projectId)) {
     return NextResponse.json({ error: "Results章节已阻断：尚无完成且标记为真实数据的AnalysisRun。请先登记可复现的真实分析运行。" }, { status: 409 });
   }
-  const evidence = workspace.works.filter((work) => ["全文已阅读", "论断证据已定位"].includes(work.status));
+  const evidence = workspace.works.filter((work) => work.bibliographicStatus === "verified" && work.retractionStatus !== "retracted");
   const requiresEvidence = parsed.data.section
     ? parsed.data.section !== "methods"
     : ["literature_summary", "evidence_verification", "english_academic_writing", "citation_validation"]
@@ -101,7 +138,7 @@ export async function POST(request: Request) {
 
     const draft = result.content.trim();
     const allowedIds = new Set(evidence.map((work) => work.id));
-    const citedIds = Array.from(draft.matchAll(/\[([A-Za-z0-9_-]+)\]/g), (match) => match[1]);
+    const citedIds = Array.from(draft.matchAll(/\[\[CITE:([^\]]+)\]\]/g), (match) => match[1].split(";")).flat();
     const unknown = citedIds.filter((id) => !allowedIds.has(id));
     if (unknown.length > 0) {
       return NextResponse.json({ error: `模型使用了证据库之外的引用：${Array.from(new Set(unknown)).join(", ")}` }, { status: 422 });

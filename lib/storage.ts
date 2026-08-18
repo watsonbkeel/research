@@ -136,7 +136,11 @@ export async function importWork(input: Pick<Work, "title" | "authors" | "year" 
     id: `imported-${digest}`,
     doi: normalizedDoi,
     group: "相邻研究",
-    status: normalizedDoi ? "DOI已核对" : "书目信息已核对",
+    status: "未核验",
+    bibliographicStatus: "unverified",
+    fullTextStatus: "unavailable",
+    legacyStatusRequiresReverification: false,
+    retractionStatus: "unknown",
   };
   workspace.works.push(work);
   workspace.updatedAt = new Date().toISOString();

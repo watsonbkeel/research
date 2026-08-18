@@ -1,14 +1,29 @@
-import { exportDocx } from "@/lib/docx-exporter";
+import { NextResponse } from "next/server";
+import { getProject } from "@/lib/portfolio";
+import { getProjectDocument } from "@/lib/project-documents";
+import { exportProjectDocumentDocx, safeFileSlug } from "@/lib/project-document-exporter";
 import { readWorkspace } from "@/lib/storage";
+import { runCitationAudit } from "@/lib/citation-audit";
 
 export const runtime = "nodejs";
 
-export async function GET() {
-  const body = await exportDocx(await readWorkspace());
+export async function GET(request: Request) {
+  const params = new URL(request.url).searchParams;
+  const projectId = params.get("projectId");
+  const documentId = params.get("documentId");
+  const versionId = params.get("versionId") ?? undefined;
+  const formal = params.get("formal") === "1";
+  if (!projectId || !documentId) return NextResponse.json({ error: "projectId、documentId 是必填参数。" }, { status: 400 });
+  const project = getProject(projectId);
+  const document = getProjectDocument(projectId, documentId);
+  if (!project || !document) return NextResponse.json({ error: "项目或文档不存在。" }, { status: 404 });
+  const audit = await runCitationAudit({ projectId, documentId, versionId, formal });
+  if (formal && audit.blockers.length) return NextResponse.json({ error: "正式导出被引用审查阻断。", audit }, { status: 409 });
+  const body = await exportProjectDocumentDocx(project, document, await readWorkspace(projectId), formal ? undefined : audit);
   return new Response(new Uint8Array(body), {
     headers: {
       "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "content-disposition": 'attachment; filename="ai-c2c-doctoral-proposal.docx"',
+      "content-disposition": `attachment; filename="${safeFileSlug(document.title)}.docx"`,
       "cache-control": "no-store",
     },
   });

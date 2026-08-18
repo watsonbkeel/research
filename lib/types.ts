@@ -1,9 +1,15 @@
 export type EvidenceStatus =
+  | "未核验"
   | "DOI已核对"
   | "书目信息已核对"
   | "摘要已核对"
   | "全文已阅读"
   | "论断证据已定位";
+
+export type BibliographicVerificationStatus = "unverified" | "verified" | "partial_match" | "mismatch" | "failed";
+export type FullTextStatus = "unavailable" | "available" | "parsed" | "reviewed" | "parse_failed";
+export type ClaimEvidenceVerificationStatus = "unverified" | "ai_suggested" | "human_verified" | "rejected";
+export type RetractionStatus = "clear" | "corrected" | "retracted" | "unknown";
 
 export type ChecklistStatus = "未开始" | "进行中" | "已满足" | "待确认";
 
@@ -65,7 +71,135 @@ export interface Work {
   doi?: string;
   group: "直接重合" | "相邻研究" | "理论来源" | "量表来源" | "方法来源";
   status: EvidenceStatus;
+  bibliographicStatus?: BibliographicVerificationStatus;
+  fullTextStatus?: FullTextStatus;
+  legacyStatusRequiresReverification?: boolean;
   relevance: string;
+}
+
+export interface VerificationEvent {
+  id: string;
+  projectId?: string;
+  candidateId?: string;
+  workId?: string;
+  provider: "crossref" | "openalex" | "publisher" | "manual" | "import";
+  inputIdentifier: string;
+  checkedAt: string;
+  matchedFields: { doi: boolean; title: boolean; authors: boolean; year: boolean; venue: boolean };
+  result: BibliographicVerificationStatus;
+  retractionStatus: RetractionStatus;
+  rawResponseHash?: string;
+  notes?: string;
+}
+
+export interface CandidateRecord {
+  id: string;
+  projectId: string;
+  searchRunId?: string;
+  provider: "openalex" | "crossref" | "semantic-scholar" | "manual";
+  providerRecordId: string;
+  title: string;
+  authors: string[];
+  year?: number;
+  venue?: string;
+  doi?: string;
+  url?: string;
+  abstract?: string;
+  status: "discovered" | "verification_pending" | "promoted" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FullTextAsset {
+  id: string;
+  projectId: string;
+  workId: string;
+  source: "user_upload" | "open_access" | "licensed_local" | "manual";
+  localPath?: string;
+  checksum: string;
+  mimeType: string;
+  pageCount?: number;
+  status: Exclude<FullTextStatus, "unavailable">;
+  rightsStatus: "open" | "licensed" | "restricted" | "unknown";
+  externalModelUsePermission: "allowed" | "prohibited" | "unknown";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvidenceExcerptRecord {
+  id: string;
+  projectId: string;
+  workId: string;
+  fullTextAssetId?: string;
+  quote?: string;
+  paraphrase?: string;
+  page?: string;
+  locator?: string;
+  claimId?: string;
+  supportDirection: "supporting" | "contradicting" | "mixed" | "context-only";
+  strength: "low" | "medium" | "high";
+  relevance: "low" | "medium" | "high";
+  verificationStatus: ClaimEvidenceVerificationStatus;
+  reviewer?: string;
+  reviewedAt?: string;
+  rightsStatus: "open" | "licensed" | "restricted" | "unknown";
+  externalModelUsePermission: "allowed" | "prohibited" | "unknown";
+  exportPermission: "allowed" | "prohibited" | "unknown";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClaimEvidenceLink {
+  id: string;
+  projectId: string;
+  claimId: string;
+  evidenceExcerptId: string;
+  relation: "supports" | "contradicts" | "qualifies" | "background";
+  status: "ai_suggested" | "human_verified" | "rejected";
+}
+
+export interface SectionEvidenceBundle {
+  id: string;
+  projectId: string;
+  documentId: string;
+  sectionId: string;
+  mode: "exploratory" | "formal";
+  claims: Array<{
+    claimId: string;
+    text: string;
+    kind: "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method";
+    evidence: Array<{
+      evidenceExcerptId: string; workId: string; authors: string; year: number; title: string; venue?: string; doi?: string;
+      quote?: string; paraphrase?: string; locator?: string; supportDirection: string; strength: string; verificationStatus: string;
+      reviewer?: string; reviewedAt?: string;
+      externalModelUsePermission?: "allowed" | "prohibited" | "unknown";
+    }>;
+  }>;
+  unresolvedClaims: Array<{ claimId: string; reason: string }>;
+  createdAt: string;
+}
+
+export interface StructuredSectionDraft {
+  projectId: string;
+  documentId: string;
+  sectionId: string;
+  paragraphs: Array<{ markdown: string; claims: Array<{ claimId: string; claimText: string; kind: "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method"; evidenceExcerptIds: string[]; citationWorkIds: string[] }> }>;
+  unsupportedStatements: Array<{ statement: string; reason: string }>;
+  assumptions: string[];
+  evidenceGaps: string[];
+}
+
+export interface AuditIssue { code: string; severity: "blocker" | "warning"; message: string; sectionId?: string; claimId?: string; workId?: string; evidenceExcerptId?: string }
+export interface CitationAuditReport {
+  id: string; projectId: string; documentId: string; versionId: string; status: "passed" | "passed_with_warnings" | "blocked";
+  blockers: AuditIssue[]; warnings: AuditIssue[]; checkedAt: string; checkerVersion: string;
+}
+
+export interface ConsistencyReviewReport {
+  id: string; projectId: string; documentId: string; versionId: string;
+  status: "not_run" | "running" | "passed" | "passed_with_warnings" | "blocked";
+  issues: Array<{ severity: "blocker" | "warning"; sourceSectionId?: string; targetSectionId?: string; issue: string; recommendation: string }>;
+  humanApproval: "not_reviewed" | "approved" | "changes_requested"; checkedAt: string; checkerVersion: string;
 }
 
 export interface Construct {

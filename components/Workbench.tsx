@@ -36,7 +36,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type {
   ChecklistStatus,
@@ -45,6 +45,8 @@ import type {
   PublicModelSettings,
   TaskType,
   WorkspaceData,
+  CandidateRecord,
+  VerificationEvent,
 } from "@/lib/types";
 import { citationCoverage, validateClaims } from "@/lib/validation";
 import { UserGuide } from "./UserGuide";
@@ -92,6 +94,7 @@ const statusTone: Record<ChecklistStatus | EvidenceStatus | string, string> = {
   进行中: "progress",
   待确认: "warning",
   未开始: "neutral",
+  未核验: "warning",
   DOI已核对: "neutral",
   书目信息已核对: "progress",
   摘要已核对: "progress",
@@ -100,7 +103,19 @@ const statusTone: Record<ChecklistStatus | EvidenceStatus | string, string> = {
   证据充分: "positive",
   证据有限: "warning",
   尚需人工核验: "neutral",
+  unverified: "warning",
+  verified: "positive",
+  partial_match: "warning",
+  mismatch: "error",
+  failed: "error",
+  "书目已核验": "positive",
+  "部分匹配，待复核": "warning",
+  "信息不匹配": "error",
+  "核验失败": "error",
 };
+
+const bibliographicLabels: Record<string, string> = { unverified: "未核验", verified: "书目已核验", partial_match: "部分匹配，待复核", mismatch: "信息不匹配", failed: "核验失败" };
+function bibliographicStatusLabel(value: string | undefined) { return bibliographicLabels[value ?? "unverified"] ?? "未核验"; }
 
 function StatusBadge({ children }: { children: string }) {
   return <span className={`status ${statusTone[children] ?? "neutral"}`}>{children}</span>;
@@ -348,6 +363,8 @@ function Literature({ data, onData, notify, projectId }: { data: WorkspaceData; 
   const [query, setQuery] = useState("");
   const [group, setGroup] = useState("全部");
   const [remote, setRemote] = useState<RemoteWork[]>([]);
+  const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
+  const [verificationEvents, setVerificationEvents] = useState<VerificationEvent[]>([]);
   const [searching, setSearching] = useState(false);
   const groups = ["全部", ...Array.from(new Set(data.works.map((work) => work.group)))];
   const filtered = useMemo(() => data.works.filter((work) => {
@@ -355,6 +372,16 @@ function Literature({ data, onData, notify, projectId }: { data: WorkspaceData; 
     const haystack = `${work.authors} ${work.title} ${work.venue} ${work.doi ?? ""}`.toLowerCase();
     return matchesGroup && haystack.includes(query.toLowerCase());
   }), [data.works, group, query]);
+
+  const loadCandidates = useCallback(async () => {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/candidates`);
+    if (!response.ok) return;
+    const result = await response.json() as { candidates?: CandidateRecord[]; verificationEvents?: VerificationEvent[] };
+    setCandidates(result.candidates ?? []);
+    setVerificationEvents(result.verificationEvents ?? []);
+  }, [projectId]);
+
+  useEffect(() => { void loadCandidates(); }, [loadCandidates]);
 
   async function searchOpenAlex() {
     if (query.trim().length < 3) return notify("请输入至少3个字符的检索词");
@@ -375,8 +402,9 @@ function Literature({ data, onData, notify, projectId }: { data: WorkspaceData; 
     });
     const result = await response.json();
     if (!response.ok) return notify(result.error ?? "导入失败");
-    onData(result);
-    notify("候选文献已加入本地证据库");
+    if (result.workspace) onData(result.workspace);
+    await loadCandidates();
+    notify("候选文献已保存为“仅发现，未核验”；完成书目核验后才能进入正式引用");
   }
 
   return (
@@ -396,19 +424,29 @@ function Literature({ data, onData, notify, projectId }: { data: WorkspaceData; 
           <tbody>{remote.map((work) => <tr key={work.id}><td className="work-cell"><strong>{work.title}</strong><span>{work.authors || "作者信息缺失"} ({work.year})</span><small>{work.venue || "来源信息缺失"}{work.doi ? ` · ${work.doi}` : ""}</small></td><td>{work.citations}</td><td><span className="plain-tag">未核验</span></td><td><button className="button secondary" onClick={() => importCandidate(work)}>加入证据库</button></td></tr>)}</tbody>
         </table>
       </div>}
+      {candidates.length > 0 && <section className="table-shell" style={{ marginTop: 18 }} aria-label="候选文献">
+        <table>
+          <thead><tr><th>候选文献</th><th>来源</th><th>状态</th><th>最近核验</th><th>操作</th></tr></thead>
+          <tbody>{candidates.map((candidate) => {
+            const event = verificationEvents.find((item) => item.candidateId === candidate.id);
+            return <tr key={candidate.id}><td className="work-cell"><strong>{candidate.title}</strong><span>{candidate.authors.join("; ") || "作者信息缺失"}{candidate.year ? ` (${candidate.year})` : ""}</span><small>{candidate.venue || "来源信息缺失"}{candidate.doi ? ` · ${candidate.doi}` : ""}</small></td><td>{candidate.provider}</td><td><StatusBadge>{candidate.status === "promoted" ? "已升级 Work" : "仅发现，未核验"}</StatusBadge></td><td>{event ? `${bibliographicStatusLabel(event.result)} · ${new Date(event.checkedAt).toLocaleDateString()}` : "尚未执行 VerificationEvent"}</td><td>{candidate.doi && candidate.status !== "promoted" && <button className="button secondary" onClick={async () => { const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/candidates`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ candidateId: candidate.id }) }); const result = await response.json(); await loadCandidates(); notify(response.ok ? `核验结果：${bibliographicStatusLabel(result.event?.result)}` : `核验未通过：${bibliographicStatusLabel(result.event?.result)}${result.error ? `，${result.error}` : ""}`); }}>核验书目</button>}</td></tr>;
+          })}</tbody>
+        </table>
+      </section>}
       <div className="table-shell">
         <table>
           <thead><tr><th>文献</th><th>分组</th><th>核验状态</th><th>研究用途</th><th><span className="sr-only">链接</span></th></tr></thead>
           <tbody>
-            {filtered.map((work) => (
-              <tr key={work.id}>
+            {filtered.map((work) => {
+              const event = verificationEvents.find((item) => item.workId === work.id);
+              return <tr key={work.id}>
                 <td className="work-cell"><strong>{work.title}</strong><span>{work.authors} ({work.year})</span><small>{work.venue}</small></td>
                 <td><span className="plain-tag">{work.group}</span></td>
-                <td><StatusBadge>{work.status}</StatusBadge></td>
+                <td><StatusBadge>{bibliographicStatusLabel(work.bibliographicStatus)}</StatusBadge><small>{event ? `${bibliographicStatusLabel(event.result)} · ${new Date(event.checkedAt).toLocaleDateString()}` : "尚无 VerificationEvent"}</small></td>
                 <td className="relevance">{work.relevance}</td>
                 <td>{work.doi && <a className="icon-link" href={`https://doi.org/${work.doi}`} target="_blank" rel="noreferrer" title={`打开 DOI ${work.doi}`}><ExternalLink size={16} /></a>}</td>
               </tr>
-            ))}
+            })}
           </tbody>
         </table>
       </div>

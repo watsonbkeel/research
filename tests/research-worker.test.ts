@@ -188,7 +188,7 @@ describe("research worker", () => {
 
     await runResearchWorker({ once: true, workerId: "test-worker" });
 
-    expect(getResearchJob(proposal.id)).toMatchObject({ status: "completed", stage: "consistency-review", progress: 100 });
+    expect(getResearchJob(proposal.id)).toMatchObject({ status: "completed", stage: "proposal-draft", progress: 100 });
     expect(mocks.saveSectionDraft).toHaveBeenCalledWith(expect.objectContaining({ manuscriptId: "manuscript-1", sectionId: "section-1", content: expect.stringContaining("proposed study") }));
     const providerPrompt = mocks.callProvider.mock.calls[0][0].prompt as string;
     expect(providerPrompt).toContain("研究 AI 声明");

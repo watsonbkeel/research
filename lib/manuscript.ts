@@ -23,7 +23,11 @@ const sectionSchema = z.object({
   targetWords: z.number().int().min(0).max(100000),
   content: z.string().max(500000),
   citationIds: z.array(z.string().max(120)).max(500),
+  evidenceExcerptIds: z.array(z.string().max(160)).max(1000).default([]),
+  evidenceBundleId: z.string().max(160).optional(),
   claimIds: z.array(z.string().max(120)).max(500),
+  unsupportedStatements: z.array(z.object({ statement: z.string().max(5000), reason: z.string().max(2000) })).max(200).default([]),
+  evidenceGaps: z.array(z.string().max(3000)).max(200).default([]),
   dependencyIds: z.array(z.string().max(120)).max(500),
   researchStatus: z.enum(["planned", "completed", "verified"]),
   status: z.enum(["draft", "evidence-checked", "methods-checked", "supervisor-reviewed", "approved"]),
@@ -83,6 +87,12 @@ export const draftVersionSchema = z.object({
   sectionId: z.string().min(1).max(120),
   versionNumber: z.number().int().min(1),
   content: z.string().max(500000),
+  citationIds: z.array(z.string()).default([]),
+  claimIds: z.array(z.string()).default([]),
+  evidenceExcerptIds: z.array(z.string()).default([]),
+  evidenceBundleId: z.string().optional(),
+  unsupportedStatements: z.array(z.object({ statement: z.string(), reason: z.string() })).default([]),
+  evidenceGaps: z.array(z.string()).default([]),
   changeSummary: z.string().max(3000),
   editor: z.string().max(300),
   generatedBy: z.string().max(200).optional(),
@@ -119,7 +129,7 @@ const chapterTitles = [
 function makeSections(chapterId: string, chapterNumber: number, title: string): ManuscriptSection[] {
   return [{
     id: `${chapterId}-main`, chapterId, number: `${chapterNumber}.1`, title, order: 0, targetWords: chapterNumber === 8 || chapterNumber === 9 ? 1800 : 1000,
-    content: "", citationIds: [], claimIds: [], dependencyIds: [], researchStatus: "planned", status: "draft",
+    content: "", citationIds: [], evidenceExcerptIds: [], claimIds: [], dependencyIds: [], unsupportedStatements: [], evidenceGaps: [], researchStatus: "planned", status: "draft",
     humanEditStatus: "ai-generated", locked: false, updatedAt: new Date().toISOString(),
   }];
 }
@@ -172,6 +182,7 @@ export function saveSectionDraft(input: { manuscriptId: string; sectionId: strin
   const version: DraftVersion = {
     id: `draft-${randomUUID()}`, manuscriptId: manuscript.id, sectionId: input.sectionId, versionNumber: versions.length + 1,
     content: input.content, changeSummary: input.changeSummary, editor: input.editor, generatedBy: input.generatedBy,
+    citationIds: found.citationIds, claimIds: found.claimIds, evidenceExcerptIds: found.evidenceExcerptIds, evidenceBundleId: found.evidenceBundleId, unsupportedStatements: found.unsupportedStatements, evidenceGaps: found.evidenceGaps,
     promptTemplateVersion: input.promptTemplateVersion, researchStatus: input.researchStatus ?? found.researchStatus,
     manuscriptStatus: input.manuscriptStatus ?? found.status, createdAt: now,
   };

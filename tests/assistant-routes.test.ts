@@ -38,7 +38,8 @@ describe("assistant orchestration routes", () => {
     expect(firstPayload.job.status).toBe("queued");
 
     const blockedResponse = await postMessage(messageRequest("Too soon"), context);
-    expect(blockedResponse.status).toBe(409);
+    expect(blockedResponse.status).toBe(200);
+    expect((await blockedResponse.json()).assistant.metadata.readOnly).toBe(true);
 
     claimNextJob("worker-a");
     transitionJob(firstPayload.job.id, "waiting-user");

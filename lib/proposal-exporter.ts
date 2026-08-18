@@ -16,6 +16,7 @@ import {
 } from "docx";
 import type { EvidenceExcerpt } from "./evidence-excerpts";
 import type { InstitutionProfile } from "./institution";
+import { referencesFor, renderCitationTokens } from "./citation-service";
 import type { Manuscript } from "./manuscript";
 import type { ResearchPlanState } from "./research-plan";
 import type { WorkspaceData } from "./types";
@@ -64,11 +65,6 @@ function sectionContent(content: string) {
   });
 }
 
-function reference(work: WorkspaceData["works"][number]) {
-  const doi = work.doi ? ` https://doi.org/${work.doi}` : "";
-  return new Paragraph({ indent: { left: 720, hanging: 720 }, spacing: { after: 120, line: 290 }, children: [run(`${work.authors} (${work.year}). ${work.title}. `), run(work.venue, { italics: true }), run(`.${doi}`)] });
-}
-
 function statusNote(manuscript: Manuscript, institution: InstitutionProfile) {
   const state = manuscript.status === "approved" ? "approved" : "draft";
   const target = institution.verificationStatus === "verified" ? institution.university : "generic Australian baseline";
@@ -76,13 +72,9 @@ function statusNote(manuscript: Manuscript, institution: InstitutionProfile) {
 }
 
 export async function exportConfirmationProposal(input: { workspace: WorkspaceData; manuscript: Manuscript; researchPlan: ResearchPlanState; evidence: EvidenceExcerpt[]; institution: InstitutionProfile }): Promise<Buffer> {
-  const { workspace, manuscript, researchPlan, evidence, institution } = input;
+  const { workspace, manuscript, researchPlan, institution } = input;
   const sections = manuscript.chapters.flatMap((chapter) => chapter.sections.sort((a, b) => a.order - b.order));
-  const citedIds = new Set<string>([
-    ...workspace.claims.flatMap((claim) => claim.citationIds),
-    ...sections.flatMap((section) => section.citationIds),
-    ...evidence.map((excerpt) => excerpt.workId),
-  ]);
+  const citedIds = new Set<string>(sections.flatMap((section) => section.citationIds));
   const matrixRows = researchPlan.hypotheses.map((hypothesis) => {
     const study = workspace.experiments.find((item) => hypothesis.studyIds.includes(item.id));
     const analysis = researchPlan.analysisPlans.find((item) => item.hypothesisIds.includes(hypothesis.id));
@@ -105,10 +97,10 @@ export async function exportConfirmationProposal(input: { workspace: WorkspaceDa
     heading("Declaration of originality and AI assistance", HeadingLevel.HEADING_1),
     paragraph("This proposal distinguishes researcher-authored decisions, AI-assisted drafting, evidence verification and supervisor approval. AI assistance does not establish evidence, authorship, originality or approval. No result, sample statistic, citation or source claim may be treated as completed unless registered and verified."),
     heading("Abstract", HeadingLevel.HEADING_1),
-    paragraph("This Confirmation Proposal examines how truthful AI-assisted product-description practices and provenance transparency may influence buyer responses in consumer-to-consumer second-hand marketplaces. The proposed programme retains two between-subjects experiments: a three-condition listing-production study and a 2 × 2 source-transparency-by-seller-reputation study. Seller-contact intention is the primary intention proxy, perceived product-information authenticity is the focal mechanism, and seller reputation is a boundary condition. The studies are planned; no empirical results are reported in this proposal."),
+    paragraph(`This Confirmation Proposal presents the registered research programme for ${workspace.project.titleEn}. The registered primary outcome is ${workspace.project.primaryOutcome}; the secondary outcome is ${workspace.project.secondaryOutcome}. Planned studies and unverified evidence gaps are not presented as completed findings.`),
     paragraph("Abstract status: planned and subject to evidence, supervisor and institution-specific review.", { color: muted, italics: true }),
     heading("Keywords", HeadingLevel.HEADING_1),
-    paragraph("AI-assisted content; C2C second-hand marketplaces; provenance transparency; product-information authenticity; seller reputation; seller-contact intention."),
+    paragraph([workspace.project.field, workspace.project.context, workspace.project.primaryOutcome, workspace.project.secondaryOutcome].filter(Boolean).join("; ")),
     heading("Table of Contents", HeadingLevel.HEADING_1),
     new TableOfContents("Contents", { hyperlink: true, headingStyleRange: "1-4" }),
     heading("List of Tables", HeadingLevel.HEADING_1),
@@ -118,11 +110,11 @@ export async function exportConfirmationProposal(input: { workspace: WorkspaceDa
     heading("List of Abbreviations and Key Terms", HeadingLevel.HEADING_1),
     ...manuscript.glossaryTerms.map((term) => paragraph(`${term.term}: ${term.definition}`)),
     heading("Research Programme Overview", HeadingLevel.HEADING_1),
-    paragraph("The programme separates a production-process effect from a source-attribution effect. Experiment 1 compares seller-written, AI-assisted and AI-generated descriptions under truthful attribution. Experiment 2 holds the description constant and varies the basic AI-assisted label, the seller-verification-responsibility label and seller reputation. Seller-contact intention remains an intention proxy, not actual sales conversion."),
+    paragraph(workspace.experiments.length ? workspace.experiments.map((study) => `${study.name}: ${study.objective} Design: ${study.design}. Primary test: ${study.primaryTest}.`).join(" ") : "No registered study programme is currently available."),
     matrixTable,
-    ...manuscript.chapters.sort((a, b) => a.order - b.order).flatMap((chapter) => [heading(`${chapter.number}. ${chapter.title}`, HeadingLevel.HEADING_1), ...chapter.sections.sort((a, b) => a.order - b.order).flatMap((section) => [new Paragraph({ text: `${section.number} ${section.title}`, heading: HeadingLevel.HEADING_2 }), ...sectionContent(section.content)])]),
+    ...manuscript.chapters.sort((a, b) => a.order - b.order).flatMap((chapter) => [heading(`${chapter.number}. ${chapter.title}`, HeadingLevel.HEADING_1), ...chapter.sections.sort((a, b) => a.order - b.order).flatMap((section) => [new Paragraph({ text: `${section.number} ${section.title}`, heading: HeadingLevel.HEADING_2 }), ...sectionContent(renderCitationTokens(section.content, workspace.works, Array.from(citedIds)).content)])]),
     heading("References", HeadingLevel.HEADING_1),
-    ...(Array.from(citedIds).map((id) => workspace.works.find((work) => work.id === id)).filter((work): work is WorkspaceData["works"][number] => Boolean(work)).map(reference)),
+    ...referencesFor(workspace.works, Array.from(citedIds)).map((item) => paragraph(item.text)),
     heading("Appendices", HeadingLevel.HEADING_1),
     ...manuscript.appendices.flatMap((appendix) => [new Paragraph({ text: `${appendix.number} ${appendix.title}`, heading: HeadingLevel.HEADING_2 }), ...sectionContent(appendix.content)]),
   ];

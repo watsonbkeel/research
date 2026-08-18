@@ -26,8 +26,8 @@ describe("research exports", () => {
     expect(output.byteLength).toBeGreaterThan(10_000);
     const archive = await JSZip.loadAsync(output);
     const documentXml = await archive.file("word/document.xml")?.async("string");
-    expect(documentXml).toContain("Doctoral Research Proposal Evidence Pack");
-    expect(documentXml).toContain("Study 1: Listing Production Method");
+    expect(documentXml).toContain(seedWorkspace.project.titleEn);
+    expect(documentXml).toContain("Experiment 1");
     expect(documentXml).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
@@ -37,7 +37,7 @@ describe("research exports", () => {
       workspace: seedWorkspace,
       manuscript: {
         id: "test-manuscript", documentType: "confirmation-proposal", language: "English", title: seedWorkspace.project.titleEn, version: "v0.1", status: "draft", targetUniversity: "Generic Australian university baseline", targetJournal: "", candidate: "", school: "", supervisors: [],
-        chapters: [{ id: "chapter-01", number: "1", title: "Introduction and Research Context", order: 0, targetWords: 1000, status: "planned", sections: [{ id: "chapter-01-main", chapterId: "chapter-01", number: "1.1", title: "Introduction", order: 0, targetWords: 1000, content: "", citationIds: [], claimIds: [], dependencyIds: [], researchStatus: "planned", status: "draft", humanEditStatus: "ai-generated", locked: false, updatedAt: now }] }, { id: "chapter-09", number: "9", title: "Study 2 Methodology", order: 8, targetWords: 1000, status: "planned", sections: [{ id: "chapter-09-main", chapterId: "chapter-09", number: "9.1", title: "Study 2 Methodology", order: 0, targetWords: 1000, content: "", citationIds: [], claimIds: [], dependencyIds: [], researchStatus: "planned", status: "draft", humanEditStatus: "ai-generated", locked: false, updatedAt: now }] }],
+        chapters: [{ id: "chapter-01", number: "1", title: "Introduction and Research Context", order: 0, targetWords: 1000, status: "planned", sections: [{ id: "chapter-01-main", chapterId: "chapter-01", number: "1.1", title: "Introduction", order: 0, targetWords: 1000, content: "", citationIds: [], evidenceExcerptIds: [], claimIds: [], dependencyIds: [], unsupportedStatements: [], evidenceGaps: [], researchStatus: "planned", status: "draft", humanEditStatus: "ai-generated", locked: false, updatedAt: now }] }, { id: "chapter-09", number: "9", title: "Study 2 Methodology", order: 8, targetWords: 1000, status: "planned", sections: [{ id: "chapter-09-main", chapterId: "chapter-09", number: "9.1", title: "Study 2 Methodology", order: 0, targetWords: 1000, content: "", citationIds: [], evidenceExcerptIds: [], claimIds: [], dependencyIds: [], unsupportedStatements: [], evidenceGaps: [], researchStatus: "planned", status: "draft", humanEditStatus: "ai-generated", locked: false, updatedAt: now }] }],
         glossaryTerms: [{ id: "term-c2c", term: "C2C", definition: "Consumer-to-consumer marketplace exchange." }], figures: [{ id: "figure-1", number: "Figure 1", caption: "Conceptual model.", source: "Registered constructs.", status: "planned" }], tables: [{ id: "table-1", number: "Table 1", caption: "Study matrix.", source: "Registered hypotheses.", status: "planned" }], appendices: [{ id: "appendix-a", number: "Appendix A", title: "Materials", content: "", status: "planned" }], createdAt: now, updatedAt: now,
       },
       researchPlan: { schemaVersion: 1, hypotheses: [], analysisPlans: [], updatedAt: now },

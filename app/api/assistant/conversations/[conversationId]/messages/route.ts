@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { addMessage, conversationMessageInputSchema, createProposalGenerationJob, createResearchJob, getConversation, getResearchJob, listArtifacts, listMessages, listResearchJobs, messageInputSchema, transitionJob } from "@/lib/assistant";
-import { requestsProposalGeneration } from "@/lib/assistant-intent";
+import { planAssistantIntent, requestsProposalGeneration } from "@/lib/assistant-intent";
+import { getProjectSnapshot, getCurrentDocument, getQualityBlockers } from "@/lib/assistant-tools";
 export const runtime = "nodejs";
 type Context = { params: Promise<{ conversationId: string }> };
 export async function GET(_request: Request, context: Context) { const { conversationId } = await context.params; if (!getConversation(conversationId)) return NextResponse.json({ error: "Conversation not found" }, { status: 404 }); return NextResponse.json({ messages: listMessages(conversationId) }); }
@@ -13,8 +14,14 @@ export async function POST(request: Request, context: Context) {
     const jobs = listResearchJobs(conversationId);
     const waitingJob = jobs.find((job) => job.status === "waiting-user" || job.status === "waiting-confirmation");
     const blockingJob = jobs.find((job) => ["queued", "running", "paused"].includes(job.status));
-    if (blockingJob) return NextResponse.json({ error: "当前对话已有未结束的任务，请先等待、继续或取消该任务。" }, { status: 409 });
-
+    const conversation = getConversation(conversationId)!;
+    const plan = planAssistantIntent(orchestration.data.content, { projectId: conversation.projectId, documentId: typeof conversation.metadata.documentId === "string" ? conversation.metadata.documentId : undefined });
+    if (blockingJob && plan.readOnly) {
+      const [snapshot, document, quality] = conversation.projectId ? await Promise.all([getProjectSnapshot(conversation.projectId), getCurrentDocument(conversation.projectId, plan.documentId), getQualityBlockers(conversation.projectId, plan.documentId)]) : [undefined, undefined, undefined];
+      const reply = plan.intent === "qa" ? `当前项目快照：${snapshot ? `${snapshot.project.titleEn}；${snapshot.workspace.works} 篇 Work，${snapshot.evidence.humanVerified} 条 human_verified 证据。` : "尚未绑定项目。"}` : `只读请求已执行：${plan.intent}。当前任务仍在运行，因此没有执行任何写操作。${document ? `当前文档为 ${document.title}。` : ""}${quality?.citationAudit ? ` 最近一次引用审查状态：${quality.citationAudit.status}。` : ""}`;
+      const message = addMessage(conversationId, { role: "user", content: orchestration.data.content, metadata: { plan } }); const assistant = addMessage(conversationId, { role: "assistant", content: reply, metadata: { plan, readOnly: true, blockingJobId: blockingJob.id } }); return NextResponse.json({ message, assistant, plan }, { status: 200 });
+    }
+    if (blockingJob) return NextResponse.json({ error: "当前对话已有冲突的写任务，请先等待、继续或取消该任务。只读检查和问答仍可执行。" }, { status: 409 });
     const selectedProfileId = orchestration.data.profileId ?? waitingJob?.profileId ?? undefined;
     const directProposalRequest = requestsProposalGeneration(orchestration.data.content);
     const previousHasFeasibility = Boolean(waitingJob && listArtifacts(waitingJob.id).some((artifact) => artifact.type === "feasibility-report"));
@@ -36,8 +43,9 @@ export async function POST(request: Request, context: Context) {
     const job = createResearchJob({
       conversationId,
       prompt: orchestration.data.content,
-      kind: "idea-assessment",
+      kind: directProposalRequest ? "idea-assessment" : `assistant-${plan.intent}`,
       input: {
+        ...(plan.projectId ? { projectId: plan.projectId } : {}), ...(plan.documentId ? { documentId: plan.documentId } : {}), ...(plan.sectionId ? { sectionId: plan.sectionId } : {}), assistantPlan: plan,
         ...(selectedProfileId ? { profileId: selectedProfileId } : {}),
         ...(waitingJob ? { previousJobId: waitingJob.id } : {}),
         ...(directProposalRequest ? { autoGenerateProposal: true } : {}),

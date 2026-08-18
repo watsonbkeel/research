@@ -4,7 +4,16 @@ import { addArtifact, addCandidate, addJobEvent, addMessage, claimNextJob, creat
 import { searchAcademicMetadata } from "../lib/assistant-search";
 import { addTopicCandidate, getDefaultProjectId, getProject, getTopicBatch, listTopicCandidates, updateTopicBatch, updateTopicCandidate } from "../lib/portfolio";
 import { ensureProjectProposal, saveProjectSection } from "../lib/project-documents";
+import { runCitationAudit } from "../lib/citation-audit";
+import { runConsistencyReview } from "../lib/consistency-review";
+import { getProjectSnapshot, listUnsupportedClaims } from "../lib/assistant-tools";
+import { saveCandidateRecord, stableCandidateId } from "../lib/evidence-store";
+import { verifyCandidateBibliography } from "../lib/bibliographic-verification";
+import { searchLocalFullText } from "../lib/full-text";
+import { createRevisionProposal } from "../lib/evidence-store";
 import { readManuscript, saveSectionDraft } from "../lib/manuscript";
+import { generateStructuredSection, proposeSectionRevision } from "../lib/generation-service";
+import { createEvidenceExcerpt } from "../lib/evidence-excerpts";
 
 export type WorkerOptions = { once?: boolean; pollMs?: number; leaseMs?: number; workerId?: string };
 type JsonMap = Record<string, unknown>;
@@ -164,8 +173,8 @@ async function processIdeaAssessment(job: ResearchJob, owner: string, leaseMs: n
   const idea = conversationContext(job);
   const savedStage = text(job.input.stage);
   const autoGenerateProposal = job.input.autoGenerateProposal === true;
-  const clarificationRound = typeof job.input.clarificationRound === "number" ? job.input.clarificationRound : 0;
-  const revisionRound = typeof job.input.revisionRound === "number" ? job.input.revisionRound : 0;
+  const clarificationRound = Number(job.input.clarificationRound ?? 0) || 0;
+  const revisionRound = Number(job.input.revisionRound ?? 0) || 0;
   let intakeJson: JsonMap = { queries: job.input.queries };
   if (!savedStage || savedStage === "idea-intake") {
     setProgress(job, "idea-intake", 5);
@@ -218,7 +227,14 @@ async function processIdeaAssessment(job: ResearchJob, owner: string, leaseMs: n
   const report = parseJson((reportResult as { content: string }).content);
   if (!["promising", "needs_revision", "not_feasible"].includes(text(report.verdict))) throw new Error("The model did not return a valid feasibility assessment. Retry the task or choose another model.");
   addArtifact({ jobId: job.id, type: "feasibility-report", title: "Feasibility assessment", content: report, metadata: { candidateCount: searchResults.count, model: (reportResult as { profile: { model: string } }).profile.model } });
-  addMessage(job.conversationId ?? "", { role: "assistant", content: reportText(report, searchResults.count), metadata: { jobId: job.id, artifactType: "feasibility-report" } });
+  const feasibilityMessage = reportText(report, searchResults.count);
+  addMessage(job.conversationId ?? "", {
+    role: "assistant",
+    content: revisionRound > 0 && !autoGenerateProposal
+      ? `${feasibilityMessage}\n\n本轮已完成方案收敛，不再重复追问；剩余事项将作为待核验项或工作假设处理。`
+      : feasibilityMessage,
+    metadata: { jobId: job.id, artifactType: "feasibility-report" },
+  });
   const verdict = text(report.verdict);
   setProgress(job, "feasibility", 100);
   if (autoGenerateProposal) {
@@ -299,7 +315,26 @@ async function processProposal(job: ResearchJob, owner: string, leaseMs: number)
   const proposalBrief = JSON.stringify(feasibilityReport ?? {}).slice(0, 20_000);
   const completedSections = new Set(Array.isArray(job.input.completedSections) ? job.input.completedSections.map(text) : []);
   const sections = manuscript.chapters.flatMap((chapter) => chapter.sections);
-  const evidence = (await (await import("../lib/evidence-excerpts")).listEvidenceExcerpts(projectId ? { projectId } : {})).filter((excerpt) => excerpt.verificationStatus === "claim_verified" && excerpt.externalModelUsePermission !== "prohibited");
+  if (projectId && projectDocument) {
+    for (let index = 0; index < sections.length; index += 1) {
+      const section = sections[index];
+      if (completedSections.has(section.id)) continue;
+      const latest = getResearchJob(job.id);
+      if (!latest || latest.status !== "running") throw new JobControlError(latest?.status ?? "cancelled");
+      setProgress(job, "proposal-structured-draft", Math.round(10 + ((index / Math.max(1, sections.length)) * 85)), { completedSections: [...completedSections] });
+      const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId: projectDocument.id, sectionId: section.id, profileId: text(job.input.profileId) || undefined, editor: "researcher", signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
+      addArtifact({ jobId: job.id, type: "draft-version", title: section.title, content: { sectionId: section.id, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } });
+      completedSections.add(section.id);
+      updateResearchJob(job.id, { input: { completedSections: [...completedSections] } });
+    }
+    const consistency = await runConsistencyReview({ projectId, documentId: projectDocument.id, versionId: projectDocument.manuscript.version });
+    addArtifact({ jobId: job.id, type: "consistency-review", title: "一致性审查报告", content: consistency, metadata: { stage: "consistency-review", automatic: true } });
+    setProgress(job, "consistency-review", 100, { completedSections: [...completedSections], reviewId: consistency.id, reviewStatus: consistency.status });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: `Proposal 已通过统一的结构化证据服务按章节保存 DraftVersion，并完成一致性审查（${consistency.status}）。每章的 citation、EvidenceExcerpt 和 CitationAudit 已记录；自动审查不等于人工批准。`, metadata: { jobId: job.id, stage: "consistency-review", reviewId: consistency.id } });
+    transitionJob(job.id, "completed");
+    return;
+  }
+  const evidence = (await (await import("../lib/evidence-excerpts")).listEvidenceExcerpts(projectId ? { projectId } : {})).filter((excerpt) => excerpt.verificationStatus === "claim_verified" && excerpt.externalModelUsePermission === "allowed");
   for (let index = 0; index < sections.length; index += 1) {
     const section = sections[index];
     if (completedSections.has(section.id)) continue;
@@ -317,13 +352,60 @@ async function processProposal(job: ResearchJob, owner: string, leaseMs: number)
     completedSections.add(section.id);
     updateResearchJob(job.id, { input: { completedSections: [...completedSections] } });
   }
-  setProgress(job, "consistency-review", 100, { completedSections: [...completedSections] });
+  setProgress(job, "proposal-draft", 100, { completedSections: [...completedSections] });
   addMessage(job.conversationId ?? "", { role: "assistant", content: "Proposal 英文草稿已按章节保存到稿件中心的 DraftVersion。请在稿件中心逐章审核证据、方法和语言状态。", metadata: { jobId: job.id, stage: "proposal-draft" } });
   transitionJob(job.id, "completed");
 }
 
+async function processAssistantTask(job: ResearchJob, owner: string, leaseMs: number) {
+  const projectId = job.projectId; if (!projectId) throw new Error("助手任务必须绑定 projectId。"); const intent = String((job.input.assistantPlan as { intent?: string } | undefined)?.intent ?? job.kind.replace(/^assistant-/, ""));
+  setProgress(job, "tool-dispatch", 10, { intent, actions: [intent] });
+  if (intent === "idea_assessment") { await processIdeaAssessment(job, owner, leaseMs); return; }
+  if (intent === "proposal_generation") { await processProposal(job, owner, leaseMs); return; }
+  if (intent === "section_draft") {
+    const documentId = String(job.documentId ?? job.input.documentId ?? "");
+    const sectionId = String(job.input.sectionId ?? "");
+    const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId, sectionId, profileId: text(job.input.profileId) || undefined, editor: "researcher", signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
+    addArtifact({ jobId: job.id, type: "draft-version", title: "结构化章节草稿", content: { sectionId, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { intent, auditId: generated.audit.id } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: `章节草稿已保存为 DraftVersion；引用审查状态：${generated.audit.status}。`, metadata: { jobId: job.id, intent, auditId: generated.audit.id } });
+    transitionJob(job.id, "completed"); return;
+  }
+  if (intent === "bibliographic_verification" && typeof job.input.candidateId !== "string") {
+    const { listCandidateRecords } = await import("../lib/evidence-store");
+    const candidates = listCandidateRecords(projectId).filter((candidate) => candidate.status === "discovered");
+    addArtifact({ jobId: job.id, type: "verification-selection", title: "待选择的候选文献", content: candidates, metadata: { intent, readOnly: true } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: candidates.length ? `找到 ${candidates.length} 条未核验候选文献，请先指定 CandidateRecord ID；系统不会按 DOI 自动升级。` : "当前项目没有可核验的候选文献，请先执行文献检索。", metadata: { jobId: job.id, intent, readOnly: true } });
+    transitionJob(job.id, "completed"); return;
+  }
+  if (intent === "topic_comparison") {
+    const batch = job.topicBatchId ? getTopicBatch(job.topicBatchId) : undefined;
+    const candidates = job.topicBatchId ? listTopicCandidates(job.topicBatchId) : [];
+    addArtifact({ jobId: job.id, type: "topic-comparison", title: "选题比较上下文", content: candidates, metadata: { intent, topicBatchId: batch?.id, readOnly: true } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: batch ? `当前选题批次包含 ${candidates.length} 个候选；候选评估不会把元数据当成已核验证据。` : "当前对话尚未绑定选题批次，请先创建或选择一个选题比较批次。", metadata: { jobId: job.id, intent, readOnly: true } });
+    transitionJob(job.id, "completed"); return;
+  }
+  if (intent === "export") {
+    const documentId = String(job.documentId ?? job.input.documentId ?? "");
+    const audit = await runCitationAudit({ projectId, documentId, formal: true });
+    addArtifact({ jobId: job.id, type: "export-readiness", title: "项目导出检查", content: audit, metadata: { intent, formalExportBlocked: audit.blockers.length > 0 } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: audit.blockers.length ? `正式导出被阻断：${audit.blockers.length} 个 blocker。请先处理审查结果。` : `正式导出检查通过；请使用项目文档导出入口生成文件（${documentId}）。`, metadata: { jobId: job.id, intent, auditId: audit.id } });
+    transitionJob(job.id, "completed"); return;
+  }
+  if (intent === "job_control") { addMessage(job.conversationId ?? "", { role: "assistant", content: "任务控制需要通过暂停、继续、取消或重试按钮执行；当前消息未修改任何任务状态。", metadata: { jobId: job.id, intent, readOnly: true } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "qa") { const snapshot = await getProjectSnapshot(projectId); addArtifact({ jobId: job.id, type: "project-snapshot", title: "当前项目快照", content: snapshot, metadata: { intent, readOnly: true } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `当前项目：${snapshot.project.titleEn}。Work ${snapshot.workspace.works} 条，human_verified 证据 ${snapshot.evidence.humanVerified} 条。`, metadata: { jobId: job.id, intent, readOnly: true } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "citation_audit") { const documentId = String(job.documentId ?? job.input.documentId ?? ""); const report = await runCitationAudit({ projectId, documentId, formal: true }); addArtifact({ jobId: job.id, type: "citation-audit", title: "引用审查报告", content: report, metadata: { intent } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `引用审查完成：${report.status}，blocker ${report.blockers.length}，warning ${report.warnings.length}。`, metadata: { jobId: job.id, intent, reportId: report.id } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "consistency_review") { const documentId = String(job.documentId ?? job.input.documentId ?? ""); const report = await runConsistencyReview({ projectId, documentId }); addArtifact({ jobId: job.id, type: "consistency-review", title: "一致性审查报告", content: report, metadata: { intent } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `一致性审查完成：${report.status}，问题 ${report.issues.length} 个；自动审查不等于人工批准。`, metadata: { jobId: job.id, intent, reportId: report.id } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "unsupported_claims") { const documentId = String(job.documentId ?? job.input.documentId ?? ""); const items = await listUnsupportedClaims(projectId, documentId); addArtifact({ jobId: job.id, type: "unsupported-claims", title: "未支持论断", content: items, metadata: { intent } }); addMessage(job.conversationId ?? "", { role: "assistant", content: items.length ? `找到 ${items.length} 条未支持论断，未自动写入引用。` : "当前没有登记的未支持论断。", metadata: { jobId: job.id, intent } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "full_text_search") { const query = String(job.input.query ?? job.prompt); const results = searchLocalFullText(projectId, query); addArtifact({ jobId: job.id, type: "full-text-search", title: "本地全文搜索", content: results, metadata: { intent, query } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `本地全文搜索完成：${results.length} 个页码命中。`, metadata: { jobId: job.id, intent } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "evidence_extraction") { const query = String(job.input.query ?? job.prompt).trim(); const results = searchLocalFullText(projectId, query); const workspace = await readWorkspace(projectId); const claimId = typeof job.input.claimId === "string" && workspace.claims.some((claim) => claim.id === job.input.claimId) ? job.input.claimId : undefined; const created = []; for (const result of results.slice(0, 20)) { const work = workspace.works.find((item) => item.id === result.workId); if (!work || work.bibliographicStatus !== "verified" || work.retractionStatus === "retracted") continue; try { created.push(await createEvidenceExcerpt({ workId: work.id, fullTextAssetId: result.assetId, page: result.page, locator: `PDF page ${result.page}`, claimId, paraphrase: result.text.slice(0, 2000), supportDirection: "supporting", strength: "medium", relevance: "medium", verificationStatus: "ai_suggested", externalModelUsePermission: "prohibited", exportPermission: "unknown" }, projectId)); } catch { /* keep the search result available even if a candidate excerpt needs manual correction */ } } addArtifact({ jobId: job.id, type: "evidence-excerpts", title: "AI建议证据摘录", content: created, metadata: { intent, query, verificationStatus: "ai_suggested", requiresHumanReview: true } }); addMessage(job.conversationId ?? "", { role: "assistant", content: created.length ? `已从本地全文生成 ${created.length} 条 ai_suggested 摘录；尚未人工核验，不能直接进入正式稿。` : "没有找到可用于生成摘录的已核验 Work 全文；候选文献不会被伪装成证据。", metadata: { jobId: job.id, intent, readOnly: false } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "literature_search") { const results = await runWithHeartbeat(job, owner, (signal) => searchAcademicMetadata(job.prompt, { perProvider: 10, signal }), leaseMs) as Awaited<ReturnType<typeof searchAcademicMetadata>>; for (const candidate of results.candidates) saveCandidateRecord({ id: stableCandidateId(projectId, candidate.provider, candidate.sourceId), projectId, provider: candidate.provider, providerRecordId: candidate.sourceId, title: candidate.title, authors: candidate.authors, year: candidate.year, venue: candidate.venue, doi: candidate.doi, url: candidate.url, abstract: candidate.abstract }); addArtifact({ jobId: job.id, type: "candidate-search", title: "候选文献（未核验）", content: results, metadata: { intent, provenance: "metadata-discovery" } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `已找到 ${results.candidates.length} 条候选文献；它们仍是 metadata-discovery，尚未写入正式引用。`, metadata: { jobId: job.id, intent } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "bibliographic_verification") { const candidateId = String(job.input.candidateId ?? ""); const result = await verifyCandidateBibliography({ projectId, candidateId }); addArtifact({ jobId: job.id, type: "verification-event", title: "书目核验事件", content: result, metadata: { intent } }); addMessage(job.conversationId ?? "", { role: "assistant", content: `书目核验结果：${result.event.result}。只有 verified 才会升级为 Work。`, metadata: { jobId: job.id, intent } }); transitionJob(job.id, "completed"); return; }
+  if (intent === "section_revision") { const documentId = String(job.documentId ?? job.input.documentId ?? ""); const sectionId = String(job.input.sectionId ?? ""); const revisionDraft = await runWithHeartbeat(job, owner, (signal) => proposeSectionRevision({ projectId, documentId, sectionId, profileId: text(job.input.profileId) || undefined, signal }), leaseMs) as Awaited<ReturnType<typeof proposeSectionRevision>>; const revision = createRevisionProposal({ projectId, documentId, sectionId, beforeText: revisionDraft.beforeText, afterText: revisionDraft.afterText, metadata: { intent, citationIds: revisionDraft.citationIds, claimIds: revisionDraft.claimIds, evidenceExcerptIds: revisionDraft.evidenceExcerptIds, evidenceBundleId: revisionDraft.evidenceBundleId, evidenceGaps: revisionDraft.draft.evidenceGaps, attempts: revisionDraft.attempts, requiresApproval: true } }); addArtifact({ jobId: job.id, type: "revision-diff", title: "章节修改建议", content: { revisionId: revision.id, before: revision.beforeText, after: revision.afterText }, metadata: { intent, requiresApproval: true } }); addMessage(job.conversationId ?? "", { role: "assistant", content: "已根据当前项目证据包生成章节修改 diff。正文尚未改变；请审核 diff 后明确应用。", metadata: { jobId: job.id, intent, revisionId: revision.id } }); transitionJob(job.id, "completed"); return; }
+  throw new Error(`暂不支持助手意图：${intent}`);
+}
+
 async function processJob(job: ResearchJob, owner: string, leaseMs: number) {
-  try { if (job.kind === "proposal-generation") await processProposal(job, owner, leaseMs); else if (job.kind === "topic-batch-assessment") await processTopicBatch(job, owner, leaseMs); else await processIdeaAssessment(job, owner, leaseMs); }
+  try { if (job.kind === "proposal-generation") await processProposal(job, owner, leaseMs); else if (job.kind === "topic-batch-assessment") await processTopicBatch(job, owner, leaseMs); else if (job.kind.startsWith("assistant-")) await processAssistantTask(job, owner, leaseMs); else await processIdeaAssessment(job, owner, leaseMs); }
   catch (error) {
     if (error instanceof JobControlError) return;
     const category = retryCategory(error);

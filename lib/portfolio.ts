@@ -105,7 +105,7 @@ function upsertGlobalWork(work: Work, projectId: string) {
     .run(work.id, work.doi?.toLowerCase() ?? null, work.title, json(work), now(), now());
   db().prepare(`INSERT OR IGNORE INTO project_works (project_id, work_id, role, relevance, verification_status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(projectId, work.id, work.group, work.relevance, work.status, now(), now());
+    .run(projectId, work.id, work.group, work.relevance, work.bibliographicStatus ?? "unverified", now(), now());
 }
 
 export function registerProjectWork(projectId: string, work: Work) {

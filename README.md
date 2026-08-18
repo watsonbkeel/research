@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-普通开发命令使用 Next.js 默认监听方式。若要只绑定本机 Tailscale IPv4，请使用：
+普通开发命令固定使用 `3002` 端口（`http://localhost:3002`），不会占用其他服务使用的 `3000`。生产启动命令 `npm run start` 同样固定使用 `3002`。若要只绑定本机 Tailscale IPv4，请使用：
 
 ```bash
 npm run dev:tailscale
@@ -29,6 +29,7 @@ npm run dev:tailscale
 该命令读取 `tailscale ip -4`，默认使用端口 `3002`，也可通过 `TAILSCALE_BIND_IP` 和 `WORKBENCH_PORT` 显式指定。当前机器的访问地址为 `http://100.92.205.125:3002`。这不会停止或改变 `3000`、`3001` 等其他应用。
 
 ```bash
+npm run lint
 npm run typecheck
 npm test
 npm run build
@@ -107,3 +108,15 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 - “研究者推论”和“待检验假设”必须显式标记。
 - 联系卖家意向和购买意向是代理指标，不表述为真实成交。
 - 创新性页面提供可审计证据，不保证绝对原创。
+
+## 证据闭环与正式导出
+
+文献检索先保存为 `CandidateRecord`，页面显示“仅发现，未核验”。Candidate 不会因为有 DOI 而进入 Work 或正文引用。对有 DOI 的候选，点击书目核验后，服务端通过 Crossref DOI 精确查询并比较 DOI、标题、作者、年份和来源；每次结果都保存为 `VerificationEvent`。只有 `result=verified` 才会升级为 Work，撤稿状态未知时保持 `unknown`，撤稿文献会阻断正式引用。
+
+Work 的 `bibliographicStatus`、全文 `FullTextAsset.status` 和摘录 `verificationStatus` 是三套独立状态。旧的“DOI已核对”不会被当作新 `verified`；没有真实核验事件的旧记录会标记为 `unverified` 并要求重新核验。EvidenceExcerpt 必须绑定页码或定位；`human_verified` 必须有研究者和 `reviewedAt`（旧 `reviewDate` 仅兼容）。上传 PDF 只接受用户提供的本地文件，保存在 `.local/projects/<projectId>/full-text`，按页解析并支持项目内全文搜索，默认禁止发送给外部模型。
+
+章节生成统一经过 `SectionEvidenceBundle` 和结构化 JSON Schema。模型只能返回当前证据包中的 Work/EvidenceExcerpt ID，正文使用 `[[CITE:work-id]]` 占位符；程序验证后由 `CitationService`（当前 APA 7，CSL 接口可扩展）生成正文引用和参考文献。Candidate、未核验 Work、跨项目证据、未定位引文、撤稿来源和未支持论断都会被 `CitationAudit` 记录或阻断。`ConsistencyReview` 另行检查研究问题、理论、假设、Study、估计量和结果语气；自动通过不等于人工批准。
+
+项目文档 API 和旧的 `/api/generate`、`/api/manuscript/generate` 入口都转入同一结构化生成服务。项目助手支持问答、候选检索、书目核验、本地全文搜索、证据摘录建议、未支持论断、引用审查、一致性审查、章节草稿和章节修订。只读请求可在长任务运行时继续执行；修改请求先生成持久化 diff，只有明确应用后才创建新的 DraftVersion。
+
+项目文档导出必须显式绑定 project/document。默认导出是带审查计数的草稿版；`?formal=1` 会先运行 CitationAudit，有 blocker 时返回 409，不生成正式文件。Markdown、DOCX、BibTeX 和 ZIP 的正文引用与参考文献都来自实际 `citationIds`，不会泄漏 `[[CITE:...]]`、API Key 或受限全文。数据库迁移 ID 为 `evidence-closure-v2`，首次迁移会创建 `.pre-evidence-closure-v2.bak`，重复启动幂等。

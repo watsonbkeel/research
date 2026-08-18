@@ -23,8 +23,9 @@ function bibtexType(work: Work) {
   }
 }
 
-export function exportBibtex(workspace: WorkspaceData): string {
-  return workspace.works
+export function exportBibtex(workspace: WorkspaceData, citedWorkIds?: string[]): string {
+  const allowed = citedWorkIds ? new Set(citedWorkIds) : undefined;
+  return workspace.works.filter((work) => !allowed || allowed.has(work.id))
     .map((work) => {
       const fields = [
         `  author = {${escapeBib(work.authors)}},`,

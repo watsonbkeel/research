@@ -14,7 +14,7 @@ function presentNote(value: unknown) {
 export async function runConsistencyReview(input: { projectId: string; documentId: string; versionId?: string }) {
   const document = getProjectDocument(input.projectId, input.documentId); if (!document) throw new Error("文档不存在。");
   const workspace = await readWorkspace(input.projectId); const plan = await readResearchPlan(input.projectId); const issues: ConsistencyReviewReport["issues"] = [];
-  const reviewId = `consistency-${randomUUID()}`; const reviewVersionId = input.versionId ?? document.manuscript.version; const startedAt = new Date().toISOString();
+  const reviewId = `consistency-${randomUUID()}`; const reviewVersionId = input.versionId ?? document.currentVersionId ?? document.manuscript.version; const startedAt = new Date().toISOString();
   saveConsistencyReview({ id: reviewId, projectId: input.projectId, documentId: input.documentId, versionId: reviewVersionId, status: "running", issues: [], humanApproval: "not_reviewed", checkedAt: startedAt, checkerVersion: "consistency-review-v2" });
   const sections = document.manuscript.chapters.flatMap((chapter) => chapter.sections); const find = (pattern: RegExp) => sections.find((section) => pattern.test(section.title));
   const rq = find(/research question|research questions/i); const theory = find(/theor/i); const method = find(/method|sampling|analysis/i); const result = find(/result|discussion/i);

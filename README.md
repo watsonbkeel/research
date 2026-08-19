@@ -48,7 +48,7 @@ SQLite 使用 Node.js 22 内置的 `node:sqlite` 驱动，不需要安装原生�
 
 打开工作台后，点击左侧“使用指南”或顶部问号按钮即可在网页内查看完整操作说明。指南覆盖模型与密钥配置、八类任务路由、文献证据等级、逐条证据摘录、稿件版本、研究矩阵、系统综述与 PRISMA、材料/量表权限、图表与附录、英文生成门槛、Results完整性门控、自动后备切换、常见错误及多种导出方式。
 
-个人使用时优先打开左侧“AI研究助手”：用中文描述想法后，系统会把任务写入 SQLite，由 `article-worker` 后台检索 OpenAlex、Crossref 和 Semantic Scholar，并生成可行性报告。页面可以关闭；再次打开后会恢复对话和进度。可行性确认后，英文 Proposal 按章节保存为新的 DraftVersion，不会覆盖原稿或自动标记为已核验。
+个人使用时优先打开左侧“AI研究助手”：用中文描述想法后，系统会把任务写入 SQLite，由 `article-worker` 后台检索 OpenAlex、Crossref 和 Semantic Scholar，并生成可行性报告。页面可以关闭；再次打开后会恢复对话和进度。可行性确认后，英文 Proposal 按章节事务性保存 DraftVersion 和全局 DocumentVersion；被预审查阻断的内容只进入 QuarantinedDraft，不会覆盖当前正文，也不会自动标记为已核验。
 
 后台 worker 使用：
 
@@ -63,6 +63,11 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 
 ## 博士论文级 P0 工作流
 
+- 文档分别记录 `researchMode` 与 `evidenceMode`：前者描述 prospective/empirical/theoretical/review 研究状态，后者描述 exploratory/formal 证据门槛，两者不会互相冒充。
+- 句子级 Claim Coverage 会区分已发表事实、研究者推论、计划假设、计划方法、定义和连接文本；正式事实没有 Claim、定位证据和正文 citation token 时会形成 blocker。
+- 生成前执行结构化 Schema、citation token、Claim Coverage 与 CitationAudit 预检查。被阻断的草稿连同 Coverage/CitationAudit 报告 ID 一起隔离保存，当前正文保持不变。
+- 完整稿保存和章节保存都会创建不可变的全局 `DocumentVersion`，记录父版本、章节内容 hash、证据关系和创建者；API 支持 optimistic locking，恢复操作本身也创建新版本。
+- 正式导出统一经过 `FormalExportGate`，同时检查 formal 证据模式、当前版本、Claim Coverage、CitationAudit、一致性审查、人工批准、发表状态、目标机构与必填章节。
 - “稿件中心”提供 Confirmation Proposal 的 17 章英文章节树、字数、研究状态、审阅状态和 DraftVersion 恢复。稿件内容写入 SQLite，不依赖浏览器临时状态。
 - “证据摘录”将短引文或研究者释义绑定到文献、页码/段落和 Claim；受限全文不会发送到外部模型。
 - “假设与分析”保存 Hypothesis、Estimand、模型公式、功效、排除、缺失和稳健性计划，并生成 Study Matrix。空链或断链显示为质量阻断。
@@ -70,7 +75,7 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 - “材料与量表”登记 Study 材料、刺激、模型/提示版本、卖家核验、量表题项、来源定位、授权和验证状态。
 - “图表与附录”集中查看 Table、Figure 和 Appendix 登记状态；正式结果图表仍必须连接真实 AnalysisRun。
 - “数据与结果”登记 Dataset、DatasetVersion、checksum、变量字典、可重复性检查和结构化 AnalysisRun。没有标记为真实数据且状态为 `completed` 的运行时，`Results` 英文生成会返回阻断，不会让模型编造统计结果。
-- “输出与检查”区分 Evidence Pack 与完整 Confirmation Proposal。Proposal DOCX 包含标题页、版本/状态、AI声明、摘要、关键词、自动目录字段、图表目录、章节树、参考文献和附录；首次用 Word 打开后请更新目录字段。
+- “输出与检查”区分 Evidence Pack 与完整 Confirmation Proposal。Proposal DOCX 包含标题页、版本/状态、AI声明、摘要、关键词、自动目录字段、图表目录、章节树、参考文献和附录；CitationService 支持 APA 7 与 GB/T 7714，首次用 Word 打开后请更新目录字段。
 - 目标院校未登记官方来源前，系统仅显示 generic Australian baseline，不声称符合任何具体大学。
 
 ## 多模型 API Key 与任务路由
@@ -106,7 +111,7 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 - 引用库之外的 ID 会阻断校验。
 - 只有 DOI 或书目信息核验的来源会产生全文证据警告。
 - “研究者推论”和“待检验假设”必须显式标记。
-- 联系卖家意向和购买意向是代理指标，不表述为真实成交。
+- 代理指标不得表述为更强的真实行为或因果结论。
 - 创新性页面提供可审计证据，不保证绝对原创。
 
 ## 证据闭环与正式导出
@@ -115,8 +120,10 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 
 Work 的 `bibliographicStatus`、全文 `FullTextAsset.status` 和摘录 `verificationStatus` 是三套独立状态。旧的“DOI已核对”不会被当作新 `verified`；没有真实核验事件的旧记录会标记为 `unverified` 并要求重新核验。EvidenceExcerpt 必须绑定页码或定位；`human_verified` 必须有研究者和 `reviewedAt`（旧 `reviewDate` 仅兼容）。上传 PDF 只接受用户提供的本地文件，保存在 `.local/projects/<projectId>/full-text`，按页解析并支持项目内全文搜索，默认禁止发送给外部模型。
 
-章节生成统一经过 `SectionEvidenceBundle` 和结构化 JSON Schema。模型只能返回当前证据包中的 Work/EvidenceExcerpt ID，正文使用 `[[CITE:work-id]]` 占位符；程序验证后由 `CitationService`（当前 APA 7，CSL 接口可扩展）生成正文引用和参考文献。Candidate、未核验 Work、跨项目证据、未定位引文、撤稿来源和未支持论断都会被 `CitationAudit` 记录或阻断。`ConsistencyReview` 另行检查研究问题、理论、假设、Study、估计量和结果语气；自动通过不等于人工批准。
+章节生成统一经过 `SectionEvidenceBundle` 和结构化 JSON Schema。模型只能返回当前证据包中的 Work/EvidenceExcerpt ID，正文使用 `[[CITE:work-id]]` 占位符；程序验证后由 `CitationService` 生成 APA 7 或 GB/T 7714 正文引用和参考文献。Candidate、未核验 Work、跨项目证据、未定位引文、撤稿来源和未支持论断都会被 `CitationAudit` 记录或阻断。`ConsistencyReview` 另行检查研究问题、理论、假设、Study、估计量和结果语气；自动通过不等于人工批准。
 
 项目文档 API 和旧的 `/api/generate`、`/api/manuscript/generate` 入口都转入同一结构化生成服务。项目助手支持问答、候选检索、书目核验、本地全文搜索、证据摘录建议、未支持论断、引用审查、一致性审查、章节草稿和章节修订。只读请求可在长任务运行时继续执行；修改请求先生成持久化 diff，只有明确应用后才创建新的 DraftVersion。
 
-项目文档导出必须显式绑定 project/document。默认导出是带审查计数的草稿版；`?formal=1` 会先运行 CitationAudit，有 blocker 时返回 409，不生成正式文件。Markdown、DOCX、BibTeX 和 ZIP 的正文引用与参考文献都来自实际 `citationIds`，不会泄漏 `[[CITE:...]]`、API Key 或受限全文。数据库迁移 ID 为 `evidence-closure-v2`，首次迁移会创建 `.pre-evidence-closure-v2.bak`，重复启动幂等。
+项目文档导出必须显式绑定 project/document。默认导出是带审查计数的草稿版；`?formal=1` 会运行统一 FormalExportGate，有 blocker 时返回 409，不生成正式文件。Markdown、DOCX、BibTeX 和 ZIP 的正文引用与参考文献都来自实际 `citationIds`，不会泄漏 `[[CITE:...]]`、API Key 或受限全文。
+
+数据库迁移 ID 为 `evidence-closure-v2`。首次迁移先执行 WAL FULL checkpoint，再创建 `.pre-evidence-closure-v2.sqlite` 备份并记录 SHA-256、迁移前后计数和 `PRAGMA integrity_check` 结果；数据库事务失败会自动 rollback，备份文件的灾难恢复目前需要研究者或管理员手工执行。重复启动通过 `schema_migrations` 幂等跳过已完成迁移。

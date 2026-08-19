@@ -2,7 +2,7 @@ import { Cite } from "@citation-js/core";
 import "@citation-js/plugin-csl";
 import type { Work } from "./types";
 
-export type CitationStyle = "apa" | "harvard" | "gb7714";
+export type CitationStyle = "apa" | "gb7714";
 
 function authors(work: Work): Array<{ family?: string; given?: string; literal?: string }> {
   if (work.authorsStructured?.length) return work.authorsStructured.map((author) => ({ family: author.family, given: author.given }));
@@ -42,9 +42,12 @@ function citationYearSuffixes(works: Work[], workIds: string[]) {
 
 export function renderInlineCitation(work: Work, yearSuffix = "") { return `(${inlineAuthor(work)}, ${work.year}${yearSuffix})`; }
 
+export function renderGbInlineCitation(work: Work, index: number, locator?: string) { return `[${index}${locator ? `, ${locator}` : ""}]`; }
+
 export function renderReference(work: Work, style: CitationStyle = "apa", yearSuffix = "") {
+  if (style === "gb7714") return renderGbReference(work);
   try {
-    const template = style === "apa" ? "apa" : "apa";
+    const template = "apa";
     const text = new Cite([toCslJson(work)]).format("bibliography", { format: "text", template, lang: "en-US" });
     const normalized = String(text).replace(/\s+/g, " ").trim();
     return yearSuffix ? normalized.replace(`(${work.year})`, `(${work.year}${yearSuffix})`) : normalized;
@@ -55,16 +58,25 @@ export function renderReference(work: Work, style: CitationStyle = "apa", yearSu
   }
 }
 
+function renderGbReference(work: Work) {
+  const author = authors(work).map((item) => item.literal ?? [item.family, item.given].filter(Boolean).join(", ")).filter(Boolean).join(", ") || "佚名";
+  const type = work.sourceType === "book" ? "[M]" : work.sourceType === "chapter" ? "[M]" : work.sourceType === "thesis" ? "[D]" : work.sourceType === "report" ? "[R]" : work.sourceType === "web-page" ? "[EB/OL]" : work.sourceType === "dataset" ? "[DS]" : "[J]";
+  const venue = work.containerTitle ?? work.venue;
+  const journalDetail = work.sourceType === "journal-article" && venue ? `. ${venue}${work.volume ? `, ${work.volume}` : ""}${work.issue ? `(${work.issue})` : ""}${work.pages ? `: ${work.pages}` : ""}` : work.publisher ? `. ${work.publisher}` : venue ? `. ${venue}` : "";
+  const doi = work.doi ? `. DOI: ${work.doi}` : work.url ? `. ${work.url}${work.accessedDate ? ` (accessed ${work.accessedDate})` : ""}` : "";
+  return `${author}. ${work.title}${type}${journalDetail}, ${work.year}${doi}.`;
+}
+
 export function parseCitationTokens(markdown: string) {
   return [...markdown.matchAll(/\[\[CITE:([^\]]+)\]\]/g)].flatMap((match) => match[1].split(";").map((id) => id.trim()).filter(Boolean));
 }
 
-export function renderCitationTokens(markdown: string, works: Work[], citationScopeIds?: string[]) {
+export function renderCitationTokens(markdown: string, works: Work[], citationScopeIds?: string[], style: CitationStyle = "apa") {
   const byId = new Map(works.map((work) => [work.id, work])); const unknown: string[] = []; const cited = new Set<string>();
   const suffixes = citationYearSuffixes(works, citationScopeIds ?? parseCitationTokens(markdown));
   const rendered = markdown.replace(/\[\[CITE:([^\]]+)\]\]/g, (_token, raw: string) => {
     const ids = raw.split(";").map((id) => id.trim()).filter(Boolean); const citations: string[] = [];
-    for (const id of ids) { const work = byId.get(id); if (!work) { unknown.push(id); continue; } cited.add(id); citations.push(renderInlineCitation(work, suffixes.get(id))); }
+    ids.forEach((id, index) => { const work = byId.get(id); if (!work) { unknown.push(id); return; } cited.add(id); citations.push(style === "gb7714" ? renderGbInlineCitation(work, [...cited].length + index) : renderInlineCitation(work, suffixes.get(id))); });
     return citations.length ? citations.join("; ") : "";
   });
   return { content: rendered, citedWorkIds: [...cited], unknownIds: [...new Set(unknown)], unresolvedTokens: /\[\[CITE:/.test(rendered) };

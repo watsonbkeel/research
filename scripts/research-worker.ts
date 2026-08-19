@@ -3,7 +3,7 @@ import { callOpenAICompatible, classifyProviderError, ProviderCallError, type Pr
 import { addArtifact, addCandidate, addJobEvent, addMessage, claimNextJob, createProposalGenerationJob, getResearchJob, heartbeatJob, listArtifacts, listCandidates, listMessages, recoverExpiredJobs, transitionJob, updateResearchJob, type ResearchJob } from "../lib/assistant";
 import { searchAcademicMetadata } from "../lib/assistant-search";
 import { addTopicCandidate, getDefaultProjectId, getProject, getTopicBatch, listTopicCandidates, updateTopicBatch, updateTopicCandidate } from "../lib/portfolio";
-import { ensureProjectProposal, saveProjectSection } from "../lib/project-documents";
+import { ensureProjectProposal } from "../lib/project-documents";
 import { runCitationAudit } from "../lib/citation-audit";
 import { runConsistencyReview } from "../lib/consistency-review";
 import { getProjectSnapshot, listUnsupportedClaims } from "../lib/assistant-tools";
@@ -11,7 +11,6 @@ import { saveCandidateRecord, stableCandidateId } from "../lib/evidence-store";
 import { verifyCandidateBibliography } from "../lib/bibliographic-verification";
 import { searchLocalFullText } from "../lib/full-text";
 import { createRevisionProposal } from "../lib/evidence-store";
-import { readManuscript, saveSectionDraft } from "../lib/manuscript";
 import { generateStructuredSection, proposeSectionRevision } from "../lib/generation-service";
 import { createEvidenceExcerpt } from "../lib/evidence-excerpts";
 
@@ -303,57 +302,36 @@ async function processTopicBatch(job: ResearchJob, owner: string, leaseMs: numbe
 
 async function processProposal(job: ResearchJob, owner: string, leaseMs: number) {
   const projectId = job.projectId;
-  const project = projectId ? getProject(projectId) : undefined;
-  if (projectId && !project) throw new Error("Project not found");
-  const projectDocument = projectId ? ensureProjectProposal(projectId) : undefined;
-  const manuscript = projectDocument?.manuscript ?? readManuscript();
+  if (!projectId) throw new Error("Legacy Proposal generation without projectId is disabled; use a project-scoped document job.");
+  const project = getProject(projectId);
+  if (!project) throw new Error("Project not found");
+  const projectDocument = ensureProjectProposal(projectId)!;
+  const manuscript = projectDocument.manuscript;
   const researchConversation = conversationContext(job).slice(-30_000);
   const feasibilityJobId = text(job.input.feasibilityJobId);
   const feasibilityReport = feasibilityJobId
     ? listArtifacts(feasibilityJobId).find((artifact) => artifact.type === "feasibility-report")?.content
     : undefined;
   const proposalBrief = JSON.stringify(feasibilityReport ?? {}).slice(0, 20_000);
+  const draftingGuidance = `Research conversation:\n${researchConversation}\n\nFeasibility report:\n${proposalBrief || "No feasibility report was attached."}`;
   const completedSections = new Set(Array.isArray(job.input.completedSections) ? job.input.completedSections.map(text) : []);
   const sections = manuscript.chapters.flatMap((chapter) => chapter.sections);
-  if (projectId && projectDocument) {
-    for (let index = 0; index < sections.length; index += 1) {
+  for (let index = 0; index < sections.length; index += 1) {
       const section = sections[index];
       if (completedSections.has(section.id)) continue;
       const latest = getResearchJob(job.id);
       if (!latest || latest.status !== "running") throw new JobControlError(latest?.status ?? "cancelled");
       setProgress(job, "proposal-structured-draft", Math.round(10 + ((index / Math.max(1, sections.length)) * 85)), { completedSections: [...completedSections] });
-      const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId: projectDocument.id, sectionId: section.id, profileId: text(job.input.profileId) || undefined, editor: "researcher", signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
+      const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId: projectDocument.id, sectionId: section.id, profileId: text(job.input.profileId) || undefined, editor: "researcher", guidance: draftingGuidance, signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
+      if (generated.status === "quarantined") { addArtifact({ jobId: job.id, type: "quarantined-draft", title: section.title, content: generated.quarantined, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } }); throw new Error(`章节 ${section.title} 被证据审查阻断，已保存为 quarantined draft。`); }
       addArtifact({ jobId: job.id, type: "draft-version", title: section.title, content: { sectionId: section.id, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } });
       completedSections.add(section.id);
       updateResearchJob(job.id, { input: { completedSections: [...completedSections] } });
-    }
-    const consistency = await runConsistencyReview({ projectId, documentId: projectDocument.id, versionId: projectDocument.manuscript.version });
-    addArtifact({ jobId: job.id, type: "consistency-review", title: "一致性审查报告", content: consistency, metadata: { stage: "consistency-review", automatic: true } });
-    setProgress(job, "consistency-review", 100, { completedSections: [...completedSections], reviewId: consistency.id, reviewStatus: consistency.status });
-    addMessage(job.conversationId ?? "", { role: "assistant", content: `Proposal 已通过统一的结构化证据服务按章节保存 DraftVersion，并完成一致性审查（${consistency.status}）。每章的 citation、EvidenceExcerpt 和 CitationAudit 已记录；自动审查不等于人工批准。`, metadata: { jobId: job.id, stage: "consistency-review", reviewId: consistency.id } });
-    transitionJob(job.id, "completed");
-    return;
   }
-  const evidence = (await (await import("../lib/evidence-excerpts")).listEvidenceExcerpts(projectId ? { projectId } : {})).filter((excerpt) => excerpt.verificationStatus === "claim_verified" && excerpt.externalModelUsePermission === "allowed");
-  for (let index = 0; index < sections.length; index += 1) {
-    const section = sections[index];
-    if (completedSections.has(section.id)) continue;
-    const latest = getResearchJob(job.id);
-    if (!latest || latest.status !== "running") throw new JobControlError(latest?.status ?? "cancelled");
-    const progress = Math.round(10 + ((index / Math.max(1, sections.length)) * 85));
-    setProgress(job, "proposal-draft", progress, { completedSections: [...completedSections] });
-    const policy = project?.policy ?? { outcomeInterpretation: "Planned outcomes must not be presented as realised results.", forbiddenClaims: ["invented evidence", "invented sample sizes", "invented results"] };
-    const result = await runWithHeartbeat(job, owner, (signal) => callStage(job, "english_academic_writing", `Write the following English section for an Australian doctoral Confirmation Proposal. Section: ${section.number} ${section.title}. Target words: ${section.targetWords}. Current manuscript title: ${manuscript.title}. Produce finished proposal prose, not questions, instructions, a checklist, or advice to the researcher. Resolve non-blocking missing choices with the most defensible recommendation in the feasibility report and label unverified dependencies as planned verification or working assumptions. Maintain explicit alignment among the research gap, theory, research questions, hypotheses, constructs, studies, estimands and contribution. The research conversation and feasibility report below define the proposed direction, but neither is verified evidence. Use future-oriented language for planned studies. Do not invent evidence, results, sample sizes or citations. Project integrity policy: ${policy.outcomeInterpretation}; forbidden claims: ${policy.forbiddenClaims.join("; ")}.\n\nResearch conversation:\n${researchConversation}\n\nFeasibility report:\n${proposalBrief}\n\nVerified evidence excerpts allowed:\n${evidence.map((excerpt) => `[${excerpt.id}] ${excerpt.paraphrase ?? excerpt.quote ?? ""}`).join("\n") || "None; write only planned design content and clearly mark evidence gaps."}`, signal), leaseMs);
-    const generatedBy = `${(result as { profile: { provider: string; model: string } }).profile.provider}/${(result as { profile: { model: string } }).profile.model}`;
-    const saved = projectId && projectDocument
-      ? saveProjectSection({ projectId, documentId: projectDocument.id, sectionId: section.id, content: (result as { content: string }).content.trim(), changeSummary: "AI assistant proposal draft; human review required", editor: "researcher", generatedBy })
-      : saveSectionDraft({ manuscriptId: manuscript.id, sectionId: section.id, content: (result as { content: string }).content.trim(), changeSummary: "AI assistant proposal draft; human review required", editor: "researcher", generatedBy, promptTemplateVersion: "assistant-proposal-v1", researchStatus: section.researchStatus, manuscriptStatus: "draft" });
-    addArtifact({ jobId: job.id, type: "draft-version", title: section.title, content: { sectionId: section.id, draftVersionId: saved.version.id }, metadata: { stage: "proposal-draft" } });
-    completedSections.add(section.id);
-    updateResearchJob(job.id, { input: { completedSections: [...completedSections] } });
-  }
-  setProgress(job, "proposal-draft", 100, { completedSections: [...completedSections] });
-  addMessage(job.conversationId ?? "", { role: "assistant", content: "Proposal 英文草稿已按章节保存到稿件中心的 DraftVersion。请在稿件中心逐章审核证据、方法和语言状态。", metadata: { jobId: job.id, stage: "proposal-draft" } });
+  const consistency = await runConsistencyReview({ projectId, documentId: projectDocument.id });
+  addArtifact({ jobId: job.id, type: "consistency-review", title: "一致性审查报告", content: consistency, metadata: { stage: "consistency-review", automatic: true } });
+  setProgress(job, "consistency-review", 100, { completedSections: [...completedSections], reviewId: consistency.id, reviewStatus: consistency.status });
+  addMessage(job.conversationId ?? "", { role: "assistant", content: `Proposal 已通过统一的结构化证据服务按章节保存 DraftVersion，并完成一致性审查（${consistency.status}）。每章的 citation、EvidenceExcerpt 和 CitationAudit 已记录；自动审查不等于人工批准。`, metadata: { jobId: job.id, stage: "consistency-review", reviewId: consistency.id } });
   transitionJob(job.id, "completed");
 }
 
@@ -366,6 +344,7 @@ async function processAssistantTask(job: ResearchJob, owner: string, leaseMs: nu
     const documentId = String(job.documentId ?? job.input.documentId ?? "");
     const sectionId = String(job.input.sectionId ?? "");
     const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId, sectionId, profileId: text(job.input.profileId) || undefined, editor: "researcher", signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
+    if (generated.status === "quarantined") { addArtifact({ jobId: job.id, type: "quarantined-draft", title: "结构化章节草稿", content: generated.quarantined, metadata: { intent, auditId: generated.audit.id } }); addMessage(job.conversationId ?? "", { role: "assistant", content: "章节草稿未写入当前正文，已保存为 quarantined draft，需修复证据阻断后再应用。", metadata: { jobId: job.id, intent, auditId: generated.audit.id } }); transitionJob(job.id, "completed"); return; }
     addArtifact({ jobId: job.id, type: "draft-version", title: "结构化章节草稿", content: { sectionId, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { intent, auditId: generated.audit.id } });
     addMessage(job.conversationId ?? "", { role: "assistant", content: `章节草稿已保存为 DraftVersion；引用审查状态：${generated.audit.status}。`, metadata: { jobId: job.id, intent, auditId: generated.audit.id } });
     transitionJob(job.id, "completed"); return;

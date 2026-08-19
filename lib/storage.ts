@@ -92,13 +92,19 @@ export async function readWorkspace(projectId?: string): Promise<WorkspaceData> 
   const stored = readProjectState<WorkspaceData>(resolvedProjectId, "workspace");
   if (stored && stored.schemaVersion === seedWorkspace.schemaVersion) return stored;
   if (stored) {
-    const checklistStatus = new Map(stored.confirmation.map((item) => [item.id, item.status]));
-    const seedIds = new Set(seedWorkspace.works.map((work) => work.id));
+    const defaults = cloneSeed();
     const migrated: WorkspaceData = {
-      ...cloneSeed(),
-      project: { ...seedWorkspace.project, institution: stored.project.institution },
-      confirmation: seedWorkspace.confirmation.map((item) => ({ ...item, status: checklistStatus.get(item.id) ?? item.status })),
-      works: [...seedWorkspace.works, ...stored.works.filter((work) => !seedIds.has(work.id))],
+      ...defaults,
+      ...stored,
+      schemaVersion: seedWorkspace.schemaVersion,
+      project: { ...defaults.project, ...stored.project, id: resolvedProjectId },
+      confirmation: Array.isArray(stored.confirmation) ? stored.confirmation : defaults.confirmation,
+      works: Array.isArray(stored.works) ? stored.works : [],
+      theories: Array.isArray(stored.theories) ? stored.theories : [],
+      constructs: Array.isArray(stored.constructs) ? stored.constructs : [],
+      experiments: Array.isArray(stored.experiments) ? stored.experiments : [],
+      claims: Array.isArray(stored.claims) ? stored.claims : [],
+      novelty: Array.isArray(stored.novelty) ? stored.novelty : [],
       updatedAt: new Date().toISOString(),
     };
     writeProjectState(resolvedProjectId, "workspace", migrated, migrated.schemaVersion);

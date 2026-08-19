@@ -110,6 +110,6 @@ describe("evidence closure services", () => {
   });
 
   it("understands project actions without turning them into idea assessment", () => {
-    expect(planAssistantIntent("第三章没有参考文献，帮我检查并补充").intent).toBe("citation_audit"); expect(planAssistantIntent("这个概念是什么意思").intent).toBe("qa"); expect(planAssistantIntent("比较三个研究题目").intent).toBe("topic_comparison");
+    expect(planAssistantIntent("第三章没有参考文献，帮我检查并补充").intent).toBe("section_revision"); expect(planAssistantIntent("这个概念是什么意思").intent).toBe("qa"); expect(planAssistantIntent("比较三个研究题目").intent).toBe("topic_comparison");
   });
 });

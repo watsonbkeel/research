@@ -24,6 +24,15 @@ const features: Array<[AssistantIntent, string[], boolean]> = [
 
 function normalized(value: string) { return value.normalize("NFKC").toLocaleLowerCase("zh-CN").replace(/\s+/g, " ").trim(); }
 function has(text: string, feature: string) { return text.includes(feature.toLocaleLowerCase("zh-CN")); }
+function chapterNumber(text: string) {
+  const match = text.match(/(?:第\s*)?([1-9][0-9]?|[一二三四五六七八九十]{1,3})\s*章/);
+  if (!match) return undefined;
+  if (/^\d+$/.test(match[1])) return Number(match[1]);
+  const digits: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (match[1] === "十") return 10;
+  const [left, right] = match[1].split("十");
+  return match[1].includes("十") ? (left ? digits[left] * 10 : 10) + (right ? digits[right] : 0) : digits[match[1]];
+}
 
 export function planAssistantIntent(content: string, context: { projectId?: string; documentId?: string; sectionId?: string } = {}): AssistantPlan {
   const text = normalized(content); const scored = features.map(([intent, terms, readOnly]) => ({ intent, readOnly, score: terms.reduce((sum, term) => sum + (has(text, term) ? (term.length > 3 ? 2 : 1) : 0), 0) }));
@@ -32,9 +41,15 @@ export function planAssistantIntent(content: string, context: { projectId?: stri
     const topicPlan = scored.find((item) => item.intent === "topic_comparison");
     if (topicPlan) topicPlan.score += 4;
   }
+  const requestedChapter = chapterNumber(text);
+  const chapterRepair = requestedChapter !== undefined && /(?:没有|缺少|补充|修复|检查).*(?:引用|参考文献|证据)|(?:引用|参考文献|证据).*(?:没有|缺少|补充|修复|检查)/.test(text);
+  if (chapterRepair) {
+    const revisionPlan = scored.find((item) => item.intent === "section_revision");
+    if (revisionPlan) revisionPlan.score += 10;
+  }
   scored.sort((left, right) => right.score - left.score);
-  const winner = scored[0]?.score ? scored[0] : { intent: "qa" as const, readOnly: true, score: 1 }; const confidence = Math.min(0.99, 0.35 + winner.score / 10); const sectionMatch = text.match(/(?:第\s*)?([1-9][0-9]?)\s*章/);
-  return assistantPlanSchema.parse({ intent: winner.intent, confidence, readOnly: winner.readOnly, ...context, requestedActions: [winner.intent, ...(winner.intent === "section_revision" ? ["build_diff", "await_approval"] : []), ...(winner.intent === "citation_audit" ? ["run_citation_audit"] : [])], ...(sectionMatch ? { sectionId: context.sectionId ?? `chapter-${sectionMatch[1].padStart(2, "0")}-main` } : {}) });
+  const winner = scored[0]?.score ? scored[0] : { intent: "qa" as const, readOnly: true, score: 1 }; const confidence = Math.min(0.99, 0.35 + winner.score / 10);
+  return assistantPlanSchema.parse({ intent: winner.intent, confidence, readOnly: winner.readOnly, ...context, requestedActions: [winner.intent, ...(winner.intent === "section_revision" ? ["compile_claim_coverage", "run_citation_audit", "match_existing_evidence", "search_candidates", "await_human_verification", "build_diff", "await_approval", "reaudit"] : []), ...(winner.intent === "citation_audit" ? ["run_citation_audit"] : [])], ...(requestedChapter ? { sectionId: context.sectionId ?? `chapter-${String(requestedChapter).padStart(2, "0")}-main` } : {}) });
 }
 
 export function requestsProposalGeneration(content: string) { const text = normalized(content); const autonomous = ["全部接受", "都接受", "继续", "推进", "不要再问", "自行判断"].some((word) => text.includes(word)); const plan = planAssistantIntent(content); return (plan.intent === "proposal_generation" && ["生成", "输出", "完成", "撰写", "起草", "generate", "draft", "write"].some((word) => text.includes(word))) || autonomous; }

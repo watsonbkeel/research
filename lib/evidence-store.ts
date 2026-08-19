@@ -1,21 +1,12 @@
-import { copyFileSync, existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { portfolioDatabase, readProjectState, writeProjectState } from "./portfolio";
-import type { CandidateRecord, ConsistencyReviewReport, CitationAuditReport, VerificationEvent, Work } from "./types";
+import type { CandidateRecord, ConsistencyReviewReport, CitationAuditReport, VerificationEvent, Work, QuarantinedDraft } from "./types";
+import { runMigration } from "./migration-service";
 
 const MIGRATION_ID = "evidence-closure-v2";
 const now = () => new Date().toISOString();
 const parse = <T>(value: unknown, fallback: T): T => { try { return JSON.parse(String(value)) as T; } catch { return fallback; } };
-
-function backupBeforeMigration() {
-  const db = portfolioDatabase();
-  const row = db.prepare("PRAGMA database_list").all().find((item: unknown) => typeof item === "object" && item !== null && (item as { name?: string }).name === "main") as { file?: string } | undefined;
-  const file = row?.file;
-  if (!file || !existsSync(file)) return;
-  const backup = `${file}.pre-${MIGRATION_ID}.bak`;
-  if (!existsSync(backup)) copyFileSync(file, backup);
-}
 
 function migrateLegacyRecords() {
   const db = portfolioDatabase();
@@ -84,13 +75,16 @@ export function ensureEvidenceSchema() {
     CREATE TABLE IF NOT EXISTS consistency_reviews (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,version_id TEXT NOT NULL,status TEXT NOT NULL,human_approval TEXT NOT NULL,payload_json TEXT NOT NULL,checked_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS consistency_reviews_document ON consistency_reviews(project_id,document_id,checked_at);
     CREATE TABLE IF NOT EXISTS revision_proposals (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,section_id TEXT NOT NULL,before_text TEXT NOT NULL,after_text TEXT NOT NULL,status TEXT NOT NULL,metadata_json TEXT NOT NULL,created_at TEXT NOT NULL,applied_at TEXT);
+    CREATE TABLE IF NOT EXISTS claim_coverage_reports (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,version_id TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,checked_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS claim_coverage_document ON claim_coverage_reports(project_id,document_id,checked_at);
+    CREATE TABLE IF NOT EXISTS quarantined_drafts (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,section_id TEXT NOT NULL,content TEXT NOT NULL,structured_json TEXT NOT NULL,coverage_report_id TEXT,citation_audit_report_id TEXT,blockers_json TEXT NOT NULL,warnings_json TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS publication_status_checks (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,work_id TEXT NOT NULL,check_state TEXT NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,checked_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS publication_status_work ON publication_status_checks(project_id,work_id,checked_at);
+    CREATE TABLE IF NOT EXISTS export_audit_manifests (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,version_id TEXT NOT NULL,payload_json TEXT NOT NULL,exported_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS assistant_workflow_runs (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,section_id TEXT,intent TEXT NOT NULL,state TEXT NOT NULL,actions_json TEXT NOT NULL,idempotency_key TEXT,payload_json TEXT NOT NULL,updated_at TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE UNIQUE INDEX IF NOT EXISTS assistant_workflow_idempotency ON assistant_workflow_runs(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL;
   `);
-  const migrated = db.prepare("SELECT 1 FROM schema_migrations WHERE id=?").get(MIGRATION_ID);
-  if (!migrated) {
-    backupBeforeMigration();
-    migrateLegacyRecords();
-    db.prepare("INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)").run(MIGRATION_ID, now());
-  }
+  runMigration({ id: MIGRATION_ID, migrate: migrateLegacyRecords });
 }
 
 export const candidateRecordSchema = z.object({
@@ -132,10 +126,17 @@ export function updateWorkVerification(projectId: string, workId: string, event:
   const row = db.prepare("SELECT bibliographic_json FROM works WHERE id=?").get(workId) as { bibliographic_json: string } | undefined;
   if (!row) throw new Error("Work不存在。");
   const work = parse<Work>(row.bibliographic_json, {} as Work); work.bibliographicStatus = event.result; work.retractionStatus = event.retractionStatus; work.legacyStatusRequiresReverification = false;
-  db.prepare("UPDATE works SET bibliographic_json=?,updated_at=? WHERE id=?").run(JSON.stringify(work), now(), workId);
-  db.prepare("UPDATE project_works SET verification_status=?,updated_at=? WHERE project_id=? AND work_id=?").run(event.result, now(), projectId, workId);
-  const workspace = readProjectState<{ schemaVersion: number; works: Work[]; updatedAt: string }>(projectId, "workspace");
-  if (workspace) { workspace.works = workspace.works.map((item) => item.id === workId ? work : item); workspace.updatedAt = now(); writeProjectState(projectId, "workspace", workspace, workspace.schemaVersion); }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const persistedEvent: VerificationEvent = { ...event, id: event.id || `verification-${randomUUID()}`, workId, projectId, checkedAt: event.checkedAt || now() };
+    db.prepare("INSERT INTO verification_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(persistedEvent.id, persistedEvent.projectId ?? null, persistedEvent.candidateId ?? null, persistedEvent.workId ?? workId, persistedEvent.provider, persistedEvent.inputIdentifier, persistedEvent.checkedAt ?? now(), JSON.stringify(persistedEvent.matchedFields), persistedEvent.result, persistedEvent.retractionStatus, persistedEvent.rawResponseHash ?? null, persistedEvent.notes ?? null);
+    db.prepare("UPDATE works SET bibliographic_json=?,updated_at=? WHERE id=?").run(JSON.stringify(work), now(), workId);
+    db.prepare("UPDATE project_works SET verification_status=?,updated_at=? WHERE project_id=? AND work_id=?").run(event.result, now(), projectId, workId);
+    const workspace = readProjectState<{ schemaVersion: number; works: Work[]; updatedAt: string }>(projectId, "workspace");
+    if (workspace) { workspace.works = workspace.works.map((item) => item.id === workId ? work : item); workspace.updatedAt = now(); writeProjectState(projectId, "workspace", workspace, workspace.schemaVersion); }
+    db.exec("COMMIT");
+    return persistedEvent;
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
 
 export function saveCitationAudit(report: CitationAuditReport) { ensureEvidenceSchema(); portfolioDatabase().prepare("INSERT OR REPLACE INTO citation_audits VALUES (?,?,?,?,?,?,?)").run(report.id, report.projectId, report.documentId, report.versionId, report.status, JSON.stringify(report), report.checkedAt); return report; }
@@ -154,3 +155,37 @@ export function stableCandidateId(projectId: string, provider: string, providerR
 export function createRevisionProposal(input: { projectId: string; documentId: string; sectionId: string; beforeText: string; afterText: string; metadata?: Record<string, unknown> }) { ensureEvidenceSchema(); const item = { id: `revision-${randomUUID()}`, ...input, status: "proposed", metadata: input.metadata ?? {}, createdAt: now() }; portfolioDatabase().prepare("INSERT INTO revision_proposals VALUES (?,?,?,?,?,?,?,?,?,?)").run(item.id, item.projectId, item.documentId, item.sectionId, item.beforeText, item.afterText, item.status, JSON.stringify(item.metadata), item.createdAt, null); return item; }
 export function getRevisionProposal(id: string, projectId?: string) { ensureEvidenceSchema(); const row = portfolioDatabase().prepare(`SELECT id,project_id AS projectId,document_id AS documentId,section_id AS sectionId,before_text AS beforeText,after_text AS afterText,status,metadata_json AS metadata,created_at AS createdAt,applied_at AS appliedAt FROM revision_proposals WHERE id=?${projectId ? " AND project_id=?" : ""}`).get(...([id, ...(projectId ? [projectId] : [])])) as Record<string, unknown> | undefined; return row ? { ...row, metadata: parse(row.metadata, {}) } : undefined; }
 export function markRevisionApplied(id: string) { ensureEvidenceSchema(); portfolioDatabase().prepare("UPDATE revision_proposals SET status='applied',applied_at=? WHERE id=? AND status='proposed'").run(now(), id); }
+
+export function saveQuarantinedDraft(input: Omit<QuarantinedDraft, "id" | "createdAt"> & Partial<Pick<QuarantinedDraft, "id" | "createdAt">>) {
+  ensureEvidenceSchema();
+  const draft: QuarantinedDraft = { ...input, id: input.id ?? `quarantine-${randomUUID()}`, createdAt: input.createdAt ?? now() };
+  portfolioDatabase().prepare("INSERT INTO quarantined_drafts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(draft.id, draft.projectId, draft.documentId, draft.sectionId, draft.content, JSON.stringify(draft.structuredDraft), draft.coverageReportId ?? null, draft.citationAuditReportId ?? null, JSON.stringify(draft.blockers), JSON.stringify(draft.warnings), draft.status, draft.createdAt);
+  return draft;
+}
+
+export function listQuarantinedDrafts(projectId: string, documentId?: string) {
+  ensureEvidenceSchema();
+  const sql = documentId
+    ? "SELECT id,project_id AS projectId,document_id AS documentId,section_id AS sectionId,content,structured_json AS structuredDraft,coverage_report_id AS coverageReportId,citation_audit_report_id AS citationAuditReportId,blockers_json AS blockers,warnings_json AS warnings,status,created_at AS createdAt FROM quarantined_drafts WHERE project_id=? AND document_id=? ORDER BY created_at DESC"
+    : "SELECT id,project_id AS projectId,document_id AS documentId,section_id AS sectionId,content,structured_json AS structuredDraft,coverage_report_id AS coverageReportId,citation_audit_report_id AS citationAuditReportId,blockers_json AS blockers,warnings_json AS warnings,status,created_at AS createdAt FROM quarantined_drafts WHERE project_id=? ORDER BY created_at DESC";
+  const rows = (documentId ? portfolioDatabase().prepare(sql).all(projectId, documentId) : portfolioDatabase().prepare(sql).all(projectId)) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({ ...row, structuredDraft: parse(row.structuredDraft, {}), blockers: parse(row.blockers, []), warnings: parse(row.warnings, []) })) as unknown as QuarantinedDraft[];
+}
+
+export function savePublicationStatusCheck(input: Omit<import("./types").PublicationStatusCheckResult, "id"> & { id?: string }) {
+  ensureEvidenceSchema(); const result = { ...input, id: input.id ?? `publication-check-${randomUUID()}` };
+  if (!result.projectId || !result.workId) throw new Error("publication status check 必须绑定 projectId 和 workId。");
+  portfolioDatabase().prepare("INSERT INTO publication_status_checks VALUES (?,?,?,?,?,?,?)").run(result.id, result.projectId, result.workId, result.checkState, result.status, JSON.stringify(result), result.checkedAt);
+  return result;
+}
+
+export function latestPublicationStatusCheck(projectId: string, workId: string): import("./types").PublicationStatusCheckResult | undefined {
+  ensureEvidenceSchema(); const row = portfolioDatabase().prepare("SELECT payload_json AS payload FROM publication_status_checks WHERE project_id=? AND work_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, workId) as { payload?: string } | undefined;
+  return row?.payload ? parse<import("./types").PublicationStatusCheckResult>(row.payload, undefined as never) : undefined;
+}
+
+export function saveExportAuditManifest(manifest: import("./types").ExportAuditManifest) {
+  ensureEvidenceSchema(); const id = manifest.id ?? `export-manifest-${randomUUID()}`; const saved = { ...manifest, id };
+  portfolioDatabase().prepare("INSERT INTO export_audit_manifests VALUES (?,?,?,?,?,?)").run(id, manifest.projectId, manifest.documentId, manifest.versionId, JSON.stringify(saved), manifest.exportedAt);
+  return saved;
+}

@@ -68,7 +68,7 @@ FormalExportGate 会重新计算三类快照 hash，拒绝非 `reviewable` 版�
 - `npm run test:formal-e2e`：1 file passed；1 test passed；0 failed；约 6.1 秒。
 - build：Next.js 15.5.23 production build 成功，35/35 static pages generated。
 - `git diff --check`：通过。
-- GitHub Actions：推送前尚无 run ID；推送后回填实际 run 与状态。
+- GitHub Actions：run `32234954595`，提交 `5d2f44a0ca3dcabd1ae65ff1764f2f0234c40002`，结论 `success`；链接：https://github.com/watsonbkeel/research/actions/runs/32234954595 。该 run 执行了 CI workflow 中的 lint、typecheck、全套测试、独立 formal E2E 和 build。
 
 测试日志中的 `standardFontDataUrl` 是 pdf.js 解析最小合成 PDF 时的非阻断 warning；PDF 解析、测试和 build 均成功。
 

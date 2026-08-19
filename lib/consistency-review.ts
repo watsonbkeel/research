@@ -13,7 +13,7 @@ function presentNote(value: unknown) {
 
 export async function runConsistencyReview(input: { projectId: string; documentId: string; versionId?: string }) {
   const baseDocument = getProjectDocument(input.projectId, input.documentId); if (!baseDocument) throw new Error("文档不存在。"); const document = input.versionId ? documentForVersion(baseDocument, input.versionId) : baseDocument; if (!document) throw new Error("指定文档版本不存在。");
-  const workspace = await readWorkspace(input.projectId); const plan = await readResearchPlan(input.projectId); const issues: ConsistencyReviewReport["issues"] = [];
+  const workspace = document.versionSnapshot?.workspaceSnapshot ?? await readWorkspace(input.projectId); const plan = document.versionSnapshot?.researchPlanSnapshot as Awaited<ReturnType<typeof readResearchPlan>> | undefined ?? await readResearchPlan(input.projectId); const issues: ConsistencyReviewReport["issues"] = [];
   const reviewId = `consistency-${randomUUID()}`; const reviewVersionId = input.versionId ?? document.currentVersionId ?? document.manuscript.version; const startedAt = new Date().toISOString();
   saveConsistencyReview({ id: reviewId, projectId: input.projectId, documentId: input.documentId, versionId: reviewVersionId, status: "running", issues: [], humanApproval: "not_reviewed", checkedAt: startedAt, checkerVersion: "consistency-review-v2" });
   const sections = document.manuscript.chapters.flatMap((chapter) => chapter.sections); const find = (pattern: RegExp) => sections.find((section) => pattern.test(section.title));

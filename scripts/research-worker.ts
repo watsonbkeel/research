@@ -13,9 +13,10 @@ import { listFullTextAssets, searchLocalFullText } from "../lib/full-text";
 import { createRevisionProposal } from "../lib/evidence-store";
 import { generateStructuredSection, proposeSectionRevision } from "../lib/generation-service";
 import { createEvidenceExcerpt, listEvidenceExcerpts } from "../lib/evidence-excerpts";
-import { advanceAssistantWorkflow } from "../lib/assistant-workflow";
+import { advanceAssistantWorkflow, recoverResumableAssistantWorkflows } from "../lib/assistant-workflow";
 import { compileClaimCoverage } from "../lib/claim-coverage";
 import { buildSectionEvidenceBundle } from "../lib/evidence-bundle";
+import { checkFormalExportGate } from "../lib/formal-export-gate";
 
 export type WorkerOptions = { once?: boolean; pollMs?: number; leaseMs?: number; workerId?: string };
 type JsonMap = Record<string, unknown>;
@@ -327,7 +328,7 @@ async function processProposal(job: ResearchJob, owner: string, leaseMs: number)
       setProgress(job, "proposal-structured-draft", Math.round(10 + ((index / Math.max(1, sections.length)) * 85)), { completedSections: [...completedSections] });
       const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId: projectDocument.id, sectionId: section.id, profileId: text(job.input.profileId) || undefined, editor: "researcher", guidance: draftingGuidance, signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
       if (generated.status === "quarantined") { addArtifact({ jobId: job.id, type: "quarantined-draft", title: section.title, content: generated.quarantined, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } }); throw new Error(`章节 ${section.title} 被证据审查阻断，已保存为 quarantined draft。`); }
-      addArtifact({ jobId: job.id, type: "draft-version", title: section.title, content: { sectionId: section.id, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } });
+      const savedSection = generated.documentVersion.sections.find((item) => item.sectionId === section.id)!; addArtifact({ jobId: job.id, type: "document-version", title: section.title, content: { sectionId: section.id, documentVersionId: generated.documentVersion.id, evidenceBundleId: savedSection.evidenceBundleId, citationIds: savedSection.citationIds, evidenceExcerptIds: savedSection.evidenceExcerptIds }, metadata: { stage: "proposal-structured-draft", auditId: generated.audit.id } });
       completedSections.add(section.id);
       updateResearchJob(job.id, { input: { completedSections: [...completedSections] } });
   }
@@ -348,8 +349,8 @@ async function processAssistantTask(job: ResearchJob, owner: string, leaseMs: nu
     const sectionId = String(job.input.sectionId ?? "");
     const generated = await runWithHeartbeat(job, owner, (signal) => generateStructuredSection({ projectId, documentId, sectionId, profileId: text(job.input.profileId) || undefined, editor: "researcher", signal }), leaseMs) as Awaited<ReturnType<typeof generateStructuredSection>>;
     if (generated.status === "quarantined") { addArtifact({ jobId: job.id, type: "quarantined-draft", title: "结构化章节草稿", content: generated.quarantined, metadata: { intent, auditId: generated.audit.id } }); addMessage(job.conversationId ?? "", { role: "assistant", content: "章节草稿未写入当前正文，已保存为 quarantined draft，需修复证据阻断后再应用。", metadata: { jobId: job.id, intent, auditId: generated.audit.id } }); transitionJob(job.id, "completed"); return; }
-    addArtifact({ jobId: job.id, type: "draft-version", title: "结构化章节草稿", content: { sectionId, draftVersionId: generated.version.id, evidenceBundleId: generated.version.evidenceBundleId, citationIds: generated.version.citationIds, evidenceExcerptIds: generated.version.evidenceExcerptIds }, metadata: { intent, auditId: generated.audit.id } });
-    addMessage(job.conversationId ?? "", { role: "assistant", content: `章节草稿已保存为 DraftVersion；引用审查状态：${generated.audit.status}。`, metadata: { jobId: job.id, intent, auditId: generated.audit.id } });
+    const savedSection = generated.documentVersion.sections.find((item) => item.sectionId === sectionId)!; addArtifact({ jobId: job.id, type: "document-version", title: "结构化章节草稿", content: { sectionId, documentVersionId: generated.documentVersion.id, evidenceBundleId: savedSection.evidenceBundleId, citationIds: savedSection.citationIds, evidenceExcerptIds: savedSection.evidenceExcerptIds }, metadata: { intent, auditId: generated.audit.id } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: `章节草稿已保存为 DocumentVersion；引用审查状态：${generated.audit.status}。`, metadata: { jobId: job.id, intent, auditId: generated.audit.id } });
     transitionJob(job.id, "completed"); return;
   }
   if (intent === "bibliographic_verification" && typeof job.input.candidateId !== "string") {
@@ -367,10 +368,10 @@ async function processAssistantTask(job: ResearchJob, owner: string, leaseMs: nu
     transitionJob(job.id, "completed"); return;
   }
   if (intent === "export") {
-    const documentId = String(job.documentId ?? job.input.documentId ?? "");
-    const audit = await runCitationAudit({ projectId, documentId, formal: true });
-    addArtifact({ jobId: job.id, type: "export-readiness", title: "项目导出检查", content: audit, metadata: { intent, formalExportBlocked: audit.blockers.length > 0 } });
-    addMessage(job.conversationId ?? "", { role: "assistant", content: audit.blockers.length ? `正式导出被阻断：${audit.blockers.length} 个 blocker。请先处理审查结果。` : `正式导出检查通过；请使用项目文档导出入口生成文件（${documentId}）。`, metadata: { jobId: job.id, intent, auditId: audit.id } });
+    const documentId = String(job.documentId ?? job.input.documentId ?? ""); const versionId = text(job.input.versionId); if (!versionId) throw new Error("助手正式导出检查必须显式指定 versionId。");
+    const gate = await checkFormalExportGate({ projectId, documentId, versionId });
+    addArtifact({ jobId: job.id, type: "export-readiness", title: "项目正式导出检查", content: gate, metadata: { intent, versionId, formalExportBlocked: !gate.allowed } });
+    addMessage(job.conversationId ?? "", { role: "assistant", content: gate.allowed ? `指定版本 ${versionId} 已通过完整 FormalExportGate。` : `正式导出被阻断：${gate.blockers.length} 个 blocker，${gate.warnings.length} 个 warning。`, metadata: { jobId: job.id, intent, versionId, gateAllowed: gate.allowed } });
     transitionJob(job.id, "completed"); return;
   }
   if (intent === "job_control") { addMessage(job.conversationId ?? "", { role: "assistant", content: "任务控制需要通过暂停、继续、取消或重试按钮执行；当前消息未修改任何任务状态。", metadata: { jobId: job.id, intent, readOnly: true } }); transitionJob(job.id, "completed"); return; }
@@ -403,7 +404,7 @@ async function processAssistantTask(job: ResearchJob, owner: string, leaseMs: nu
     }
     const revisionDraft = await runWithHeartbeat(job, owner, (signal) => proposeSectionRevision({ projectId, documentId, sectionId, profileId: text(job.input.profileId) || undefined, signal }), leaseMs) as Awaited<ReturnType<typeof proposeSectionRevision>>;
     advance("suggesting_excerpts", "suggest_evidence_excerpts"); advance("awaiting_human_verification", "create_ai_suggested_excerpt", "completed", "AI suggestions require human verification"); advance("drafting_revision", "generate_section_diff");
-    const revision = createRevisionProposal({ projectId, documentId, sectionId, beforeText: revisionDraft.beforeText, afterText: revisionDraft.afterText, metadata: { intent, citationIds: revisionDraft.citationIds, claimIds: revisionDraft.claimIds, evidenceExcerptIds: revisionDraft.evidenceExcerptIds, evidenceBundleId: revisionDraft.evidenceBundleId, evidenceGaps: revisionDraft.draft.evidenceGaps, attempts: revisionDraft.attempts, requiresApproval: true } });
+    const revision = createRevisionProposal({ projectId, documentId, sectionId, beforeText: revisionDraft.beforeText, afterText: revisionDraft.afterText, metadata: { intent, structuredDraft: revisionDraft.draft, citationIds: revisionDraft.citationIds, claimIds: revisionDraft.claimIds, evidenceExcerptIds: revisionDraft.evidenceExcerptIds, evidenceBundleId: revisionDraft.evidenceBundleId, evidenceGaps: revisionDraft.draft.evidenceGaps, attempts: revisionDraft.attempts, requiresApproval: true } });
     addArtifact({ jobId: job.id, type: "revision-diff", title: "章节修改建议", content: { revisionId: revision.id, before: revision.beforeText, after: revision.afterText, claims: revisionDraft.claimIds, citations: revisionDraft.citationIds, evidence: revisionDraft.evidenceExcerptIds }, metadata: { intent, requiresApproval: true } });
     advance("awaiting_revision_approval", "await_human_revision_approval", "completed", `revision ${revision.id} awaits explicit approval`);
     addMessage(job.conversationId ?? "", { role: "assistant", content: "已完成章节分析、证据匹配和候选修订 diff。正文尚未改变；请人工核验证据并明确批准 diff 后继续。", metadata: { jobId: job.id, intent, revisionId: revision.id, workflowId } }); transitionJob(job.id, "completed"); return;
@@ -430,7 +431,7 @@ export async function runResearchWorker(options: WorkerOptions = {}) {
   do {
     recoverExpiredJobs();
     const job = claimNextJob(owner, leaseMs);
-    if (job) await processJob(job, owner, leaseMs);
+    if (job) { if (job.projectId) recoverResumableAssistantWorkflows(job.projectId); await processJob(job, owner, leaseMs); }
     else if (!options.once) await sleep(options.pollMs ?? 2000);
     else break;
   } while (!options.once);

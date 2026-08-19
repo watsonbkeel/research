@@ -1,12 +1,69 @@
-import { describe, expect, it } from "vitest";
-import * as generation from "@/lib/generation-service";
-import * as quality from "@/lib/quality";
-import * as citation from "@/lib/citation-service";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createProject, getProject, registerProjectWork } from "@/lib/portfolio";
+import { documentForVersion, ensureProjectProposal, getDocumentVersion, getProjectDocument, listDocumentVersions, saveProjectDocument } from "@/lib/project-documents";
+import { readWorkspace, writeWorkspaceState } from "@/lib/storage";
+import { documentApprovalForVersion, updateWorkVerification, saveDocumentApproval } from "@/lib/evidence-store";
+import { checkPublicationStatus, type PublicationStatusAdapter } from "@/lib/publication-status";
+import { storePdfAsset } from "@/lib/full-text";
+import { createEvidenceExcerpt } from "@/lib/evidence-excerpts";
+import { promoteStructuredDraft } from "@/lib/generation-service";
+import { compileClaimCoverage } from "@/lib/claim-coverage";
+import { runCitationAudit } from "@/lib/citation-audit";
+import { runConsistencyReview } from "@/lib/consistency-review";
+import { buildVersionedQualityReport } from "@/lib/quality";
+import { checkFormalExportGate } from "@/lib/formal-export-gate";
+import { exportProjectDocumentMarkdown } from "@/lib/project-document-exporter";
+import { renderDocumentCitationClusters } from "@/lib/citation-service";
+import { saveResearchPlan } from "@/lib/research-plan";
+import type { Claim, StructuredSectionDraft, Work } from "@/lib/types";
+import { createClaimEvidenceCitationBinding } from "@/lib/claim-evidence-binding";
+
+let directory = "";
+afterEach(() => { if (directory) rmSync(directory, { recursive: true, force: true }); delete process.env.WORKBENCH_DATA_DIR; directory = ""; });
+
+function minimalPdf(text: string) {
+  const objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>", `<< /Length ${text.length + 44} >>\nstream\nBT /F1 12 Tf 72 720 Td (${text}) Tj ET\nendstream`, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+  const encoder = new TextEncoder(); let source = "%PDF-1.4\n"; const offsets = [0]; objects.forEach((object, index) => { offsets.push(encoder.encode(source).length); source += `${index + 1} 0 obj\n${object}\nendobj\n`; }); const xref = encoder.encode(source).length; source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`; for (let index = 1; index < offsets.length; index += 1) source += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`; source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`; return new Uint8Array(encoder.encode(source));
+}
+
+const clearStatus: PublicationStatusAdapter = { name: "fixture-registry", check: async () => ({ checkState: "checked", status: "clear", checkedAt: "2026-08-19T00:00:00.000Z", provider: "fixture-registry", relatedItems: [] }) };
 
 describe("formal doctoral proposal production E2E", () => {
-  it("provides the production services required by the non-mocked formal chain", () => {
-    expect((generation as unknown as { promoteStructuredDraft?: unknown }).promoteStructuredDraft).toBeTypeOf("function");
-    expect((quality as unknown as { buildVersionedQualityReport?: unknown }).buildVersionedQualityReport).toBeTypeOf("function");
-    expect((citation as unknown as { renderDocumentCitationClusters?: unknown }).renderDocumentCitationClusters).toBeTypeOf("function");
-  });
+  it("runs the Chinese evidence-to-version-to-CSL formal export chain without internal mocks", async () => {
+    directory = mkdtempSync(path.join(tmpdir(), "formal-doctoral-e2e-")); process.env.WORKBENCH_DATA_DIR = directory;
+    const project = createProject({ titleEn: "Synthetic transparency proposal", titleZh: "虚构透明度开题", field: "Information systems", context: "Synthetic decision task", institution: "Verified Test University", primaryOutcome: "Trust", secondaryOutcome: "Calibration" });
+    const otherProject = createProject({ titleEn: "Isolated project", titleZh: "隔离项目", field: "Other", context: "Other", institution: "Other University", primaryOutcome: "Other", secondaryOutcome: "Other" });
+    const document = ensureProjectProposal(project.id); const initialVersionId = document.currentVersionId!;
+    const works: Work[] = [{ id: "work-transparency", authors: "Li, Ming", year: 2024, title: "Synthetic transparency evidence", venue: "Fixture Journal", sourceType: "journal-article", doi: "10.5555/fixture-a", group: "理论来源", status: "未核验", bibliographicStatus: "unverified", relevance: "fixture", retractionStatus: "unknown" }, { id: "work-risk", authors: "Wang, Lin", year: 2025, title: "Synthetic risk evidence", venue: "Fixture Journal", sourceType: "journal-article", doi: "10.5555/fixture-b", group: "相邻研究", status: "未核验", bibliographicStatus: "unverified", relevance: "fixture", retractionStatus: "unknown" }];
+    for (const [index, work] of works.entries()) { registerProjectWork(project.id, work); updateWorkVerification(project.id, work.id, { id: `verification-${index}`, projectId: project.id, workId: work.id, provider: "manual", inputIdentifier: work.doi!, checkedAt: "2026-08-19T00:00:00.000Z", matchedFields: { doi: true, title: true, authors: true, year: true, venue: true }, result: "verified", retractionStatus: "clear" }); await checkPublicationStatus({ projectId: project.id, workId: work.id, doi: work.doi, adapter: clearStatus }); }
+    const workspace = await readWorkspace(project.id); const verifiedWorks = works.map((work) => ({ ...work, status: "书目信息已核对" as const, bibliographicStatus: "verified" as const, retractionStatus: "clear" as const }));
+    const claims: Claim[] = [{ id: "claim-transparency", text: "已有研究表明，信息透明度会影响用户对自动化建议的信任", kind: "已发表事实", citationIds: [works[0].id] }, { id: "claim-risk", text: "另一项研究发现，这种影响在高风险任务中可能更强", kind: "已发表事实", citationIds: [works[1].id] }, { id: "claim-inference", text: "本文推断并提出两个待检验命题", kind: "研究者推论", citationIds: [] }];
+    workspace.works = verifiedWorks; workspace.claims = claims; workspace.theories = [{ id: "theory-1", name: "Synthetic transparency theory", role: "主导理论", use: "Fixture mechanism", boundary: "High-risk tasks", sourceWorkIds: [works[0].id] }]; workspace.constructs = [{ id: "construct-1", nameEn: "Trust", nameZh: "信任", role: "结果", theoryId: "theory-1", definition: "Synthetic construct", measurement: "Synthetic scale", sourceWorkIds: [works[0].id] }]; workspace.experiments = [{ id: "study-1", name: "Study 1", objective: "Estimate the prospective transparency effect", design: "Randomized synthetic experiment", conditions: ["transparent", "control"], constants: ["task"], primaryTest: "Regression coefficient", ethics: "No real participants in fixture" }]; writeWorkspaceState("workspace", workspace, project.id);
+    await saveResearchPlan({ hypotheses: [{ id: "hypothesis-1", number: "H1", englishWording: "Transparency will affect trust.", chineseExplanation: "透明度影响信任。", type: "directional", theoryIds: ["theory-1"], constructIds: ["construct-1"], studyIds: ["study-1"], direction: "positive", boundary: "Synthetic tasks", evidenceIds: ["excerpt-transparency"], evidenceClass: "confirmatory", priority: "primary", falsification: "A null or negative coefficient", reviewStatus: "approved" }], analysisPlans: [{ id: "analysis-1", studyId: "study-1", hypothesisIds: ["hypothesis-1"], estimand: "ATE", model: "OLS", formula: "trust ~ transparency", analysisClass: "primary", dataStatus: "planned", power: "Prospective simulation", exclusions: "Predefined", missing: "Report missingness", robustness: "Alternative coding" }] }, project.id);
+    const editable = getProjectDocument(project.id, document.id)!; for (const section of editable.manuscript.chapters.flatMap((chapter) => chapter.sections)) section.content = "This section outlines the prospective plan."; const prepared = saveProjectDocument(project.id, document.id, editable.manuscript, { expectedVersion: editable.currentVersionNumber, editor: "researcher" });
+    const assets = [await storePdfAsset({ projectId: project.id, workId: works[0].id, bytes: minimalPdf("Synthetic transparency evidence page") }), await storePdfAsset({ projectId: project.id, workId: works[1].id, bytes: minimalPdf("Synthetic risk evidence page") })];
+    await createEvidenceExcerpt({ id: "excerpt-transparency", workId: works[0].id, fullTextAssetId: assets[0].id, paraphrase: "Synthetic evidence that transparency changes trust.", page: "3", claimId: claims[0].id, supportDirection: "supporting", verificationStatus: "human_verified", reviewer: "Researcher A", reviewedAt: "2026-08-19T01:00:00.000Z" }, project.id);
+    await createEvidenceExcerpt({ id: "excerpt-risk", workId: works[1].id, fullTextAssetId: assets[1].id, paraphrase: "Synthetic evidence that task risk qualifies the effect.", page: "5", claimId: claims[1].id, supportDirection: "supporting", verificationStatus: "human_verified", reviewer: "Researcher A", reviewedAt: "2026-08-19T01:00:00.000Z" }, project.id);
+    const section = prepared.manuscript.chapters[2].sections[0]; const draft: StructuredSectionDraft = { projectId: project.id, documentId: document.id, sectionId: section.id, paragraphs: [{ markdown: "已有研究表明，信息透明度会影响用户对自动化建议的信任 [[CITE:work-transparency]]。另一项研究发现，这种影响在高风险任务中可能更强 [[CITE:work-risk]]。本文推断并提出两个待检验命题。", claims: [{ claimId: claims[0].id, claimText: claims[0].text, kind: "published_fact", evidenceExcerptIds: ["excerpt-transparency"], citationWorkIds: [works[0].id] }, { claimId: claims[1].id, claimText: claims[1].text, kind: "published_fact", evidenceExcerptIds: ["excerpt-risk"], citationWorkIds: [works[1].id] }, { claimId: claims[2].id, claimText: claims[2].text, kind: "researcher_inference", evidenceExcerptIds: [], citationWorkIds: [] }] }], unsupportedStatements: [], assumptions: [], evidenceGaps: [] };
+    const beforePromotion = getProjectDocument(project.id, document.id)!; const versionCount = listDocumentVersions(project.id, document.id).length;
+    const promoted = await promoteStructuredDraft({ projectId: project.id, documentId: document.id, sectionId: section.id, draft, editor: "Researcher A", generatedBy: "fixture-model", idempotencyKey: "formal-e2e-promotion" }); expect(promoted.status, JSON.stringify(promoted.audit.blockers)).toBe("promoted"); if (promoted.status !== "promoted") throw new Error("formal promotion unexpectedly quarantined");
+    expect(promoted.documentVersion.id).toMatch(/^document-version-/); expect(promoted.documentVersion.id).not.toMatch(/^draft-|^preflight-/); expect(getProjectDocument(project.id, document.id)?.currentVersionId).toBe(promoted.documentVersion.id); expect(getProjectDocument(project.id, document.id)?.currentVersionId).not.toBe(beforePromotion.currentVersionId);
+    const retried = await promoteStructuredDraft({ projectId: project.id, documentId: document.id, sectionId: section.id, draft, editor: "Researcher A", generatedBy: "fixture-model", idempotencyKey: "formal-e2e-promotion" }); expect(retried.status).toBe("promoted"); expect(listDocumentVersions(project.id, document.id)).toHaveLength(versionCount + 1);
+    const version = getDocumentVersion(project.id, document.id, promoted.documentVersion.id)!; const coverage = await compileClaimCoverage({ projectId: project.id, documentId: document.id, versionId: version.id }); const targetSentences = coverage.paragraphs.find((item) => item.sectionId === section.id)!.sentences;
+    expect(targetSentences).toHaveLength(3); expect(targetSentences.slice(0, 2).map((item) => item.classification)).toEqual(["published_fact", "published_fact"]); expect(targetSentences.slice(0, 2).map((item) => item.coverageStatus)).toEqual(["covered", "covered"]); expect(targetSentences.slice(0, 2).map((item) => item.citationItemIds?.length)).toEqual([1, 1]); expect(version.claimEvidenceCitationBindings).toHaveLength(2);
+    const audit = await runCitationAudit({ projectId: project.id, documentId: document.id, versionId: version.id, formal: true }); expect(audit.blockers).toEqual([]);
+    const consistency = await runConsistencyReview({ projectId: project.id, documentId: document.id, versionId: version.id }); expect(consistency.status).toMatch(/^passed/);
+    const preApprovalGate = await checkFormalExportGate({ projectId: project.id, documentId: document.id, versionId: version.id }); expect(preApprovalGate.allowed).toBe(false); expect(preApprovalGate.blockers.map((item) => item.code)).toEqual(expect.arrayContaining(["human-approval-required", "quality-report-version-mismatch"]));
+    const quality = await buildVersionedQualityReport(project.id, document.id, version.id); expect(quality.errors).toEqual([]);
+    expect(() => saveDocumentApproval({ projectId: project.id, documentId: document.id, documentVersionId: version.id, decision: "approved", reviewer: "Researcher A", contentHash: "invalid" })).toThrow("审批 hash");
+    saveDocumentApproval({ projectId: project.id, documentId: document.id, documentVersionId: version.id, decision: "approved", reviewer: "Researcher A" }); const gate = await checkFormalExportGate({ projectId: project.id, documentId: document.id, versionId: version.id }); expect(gate.blockers).toEqual([]); expect(gate.allowed).toBe(true);
+    const frozenDocument = documentForVersion(getProjectDocument(project.id, document.id)!, version.id)!; const frozenWorkspace = version.workspaceSnapshot!; const apa = exportProjectDocumentMarkdown(getProject(project.id)!, frozenDocument, frozenWorkspace); const gb = renderDocumentCitationClusters(version.citationClusters!, version.works!, "gb7714");
+    expect(apa).not.toContain("[[CITE:"); expect(apa).not.toContain("excerpt-"); expect(apa).not.toContain("claim-"); expect(apa).toContain("Li"); expect([...gb.citations.values()]).toEqual(["[1]", "[2]"]); expect(gb.bibliography.map((item) => item.workId)).toEqual([works[0].id, works[1].id]);
+    const oldOutput = exportProjectDocumentMarkdown(getProject(project.id)!, frozenDocument, frozenWorkspace); const mutatedWorkspace = await readWorkspace(project.id); mutatedWorkspace.works.push({ ...verifiedWorks[0], id: "workspace-only", title: "Must not leak" }); writeWorkspaceState("workspace", mutatedWorkspace, project.id); expect(exportProjectDocumentMarkdown(getProject(project.id)!, documentForVersion(getProjectDocument(project.id, document.id)!, version.id)!, version.workspaceSnapshot!)).toBe(oldOutput); expect(oldOutput).not.toContain("Must not leak"); expect(oldOutput).not.toContain(otherProject.titleEn); expect(initialVersionId).not.toBe(version.id);
+    await createEvidenceExcerpt({ id: "excerpt-late-binding", workId: works[0].id, paraphrase: "A separately reviewed qualification.", page: "7", claimId: claims[0].id, supportDirection: "mixed", verificationStatus: "human_verified", reviewer: "Researcher B", reviewedAt: "2026-08-19T03:00:00.000Z" }, project.id);
+    const originalBinding = version.claimEvidenceCitationBindings![0]; await createClaimEvidenceCitationBinding({ ...originalBinding, id: undefined, createdAt: undefined, evidenceExcerptId: "excerpt-late-binding", relation: "qualifies" }); expect(documentApprovalForVersion(project.id, document.id, version.id)).toBeUndefined(); const changedBindingGate = await checkFormalExportGate({ projectId: project.id, documentId: document.id, versionId: version.id }); expect(changedBindingGate.allowed).toBe(false); expect(changedBindingGate.blockers.map((item) => item.code)).toContain("human-approval-required");
+  }, 30_000);
 });

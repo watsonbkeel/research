@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { portfolioDatabase, readProjectState, writeProjectState } from "./portfolio";
 import type { CandidateRecord, ConsistencyReviewReport, CitationAuditReport, VerificationEvent, Work, QuarantinedDraft, ClaimEvidenceCitationBinding, HumanApproval, PublicationStatusOverride } from "./types";
+import { getDocumentVersion } from "./project-documents";
 import { runMigration } from "./migration-service";
 
 const MIGRATION_ID = "evidence-closure-v2";
@@ -87,7 +88,13 @@ export function ensureEvidenceSchema() {
     CREATE INDEX IF NOT EXISTS claim_binding_version ON claim_evidence_citation_bindings(project_id,document_id,document_version_id);
     CREATE TABLE IF NOT EXISTS document_approvals (id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,document_version_id TEXT NOT NULL,decision TEXT NOT NULL,reviewer TEXT NOT NULL,reviewed_at TEXT NOT NULL,notes TEXT,UNIQUE(project_id,document_id,document_version_id));
     CREATE TABLE IF NOT EXISTS publication_status_overrides (id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL,document_version_id TEXT NOT NULL,reviewer TEXT NOT NULL,reviewed_at TEXT NOT NULL,reason TEXT NOT NULL,decision TEXT NOT NULL,UNIQUE(project_id,work_id,document_version_id));
+    CREATE TABLE IF NOT EXISTS quality_reports (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,document_version_id TEXT NOT NULL,content_hash TEXT NOT NULL,payload_json TEXT NOT NULL,checked_at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS quality_report_version ON quality_reports(project_id,document_id,document_version_id,checked_at);
   `);
+  const approvalColumns = new Set((db.prepare("PRAGMA table_info(document_approvals)").all() as Array<{ name: string }>).map((item) => item.name));
+  if (!approvalColumns.has("content_hash")) db.exec("ALTER TABLE document_approvals ADD COLUMN content_hash TEXT");
+  if (!approvalColumns.has("evidence_binding_hash")) db.exec("ALTER TABLE document_approvals ADD COLUMN evidence_binding_hash TEXT");
+  if (!approvalColumns.has("proposal_input_hash")) db.exec("ALTER TABLE document_approvals ADD COLUMN proposal_input_hash TEXT");
   runMigration({ id: MIGRATION_ID, migrate: migrateLegacyRecords });
 }
 
@@ -170,14 +177,16 @@ export function claimEvidenceCitationBindingsForVersion(projectId: string, docum
 export function saveDocumentApproval(input: Omit<HumanApproval, "id" | "reviewedAt"> & Partial<Pick<HumanApproval, "id" | "reviewedAt">>) {
   ensureEvidenceSchema();
   const reviewer = input.reviewer.trim(); if (!reviewer) throw new Error("审批 reviewer 不能为空。");
-  const approval: HumanApproval = { ...input, id: input.id ?? `approval-${randomUUID()}`, reviewer, reviewedAt: input.reviewedAt ?? now() };
-  portfolioDatabase().prepare("INSERT INTO document_approvals VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(project_id,document_id,document_version_id) DO UPDATE SET id=excluded.id,decision=excluded.decision,reviewer=excluded.reviewer,reviewed_at=excluded.reviewed_at,notes=excluded.notes").run(approval.id, approval.projectId, approval.documentId, approval.documentVersionId, approval.decision, approval.reviewer, approval.reviewedAt, approval.notes ?? null);
+  const version = getDocumentVersion(input.projectId, input.documentId, input.documentVersionId); if (!version?.contentHash || !version.evidenceBindingHash || !version.proposalInputHash) throw new Error("审批目标版本缺少完整 formal hash。");
+  if (input.contentHash && input.contentHash !== version.contentHash || input.evidenceBindingHash && input.evidenceBindingHash !== version.evidenceBindingHash || input.proposalInputHash && input.proposalInputHash !== version.proposalInputHash) throw new Error("审批 hash 与 DocumentVersion 不匹配。");
+  const approval: HumanApproval = { ...input, id: input.id ?? `approval-${randomUUID()}`, reviewer, reviewedAt: input.reviewedAt ?? now(), contentHash: version.contentHash, evidenceBindingHash: version.evidenceBindingHash, proposalInputHash: version.proposalInputHash };
+  portfolioDatabase().prepare("INSERT INTO document_approvals (id,project_id,document_id,document_version_id,decision,reviewer,reviewed_at,notes,content_hash,evidence_binding_hash,proposal_input_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,document_id,document_version_id) DO UPDATE SET id=excluded.id,decision=excluded.decision,reviewer=excluded.reviewer,reviewed_at=excluded.reviewed_at,notes=excluded.notes,content_hash=excluded.content_hash,evidence_binding_hash=excluded.evidence_binding_hash,proposal_input_hash=excluded.proposal_input_hash").run(approval.id, approval.projectId, approval.documentId, approval.documentVersionId, approval.decision, approval.reviewer, approval.reviewedAt, approval.notes ?? null, approval.contentHash!, approval.evidenceBindingHash!, approval.proposalInputHash!);
   return approval;
 }
 
 export function documentApprovalForVersion(projectId: string, documentId: string, documentVersionId: string): HumanApproval | undefined {
   ensureEvidenceSchema();
-  return portfolioDatabase().prepare("SELECT id,project_id AS projectId,document_id AS documentId,document_version_id AS documentVersionId,decision,reviewer,reviewed_at AS reviewedAt,notes FROM document_approvals WHERE project_id=? AND document_id=? AND document_version_id=?").get(projectId, documentId, documentVersionId) as HumanApproval | undefined;
+  return portfolioDatabase().prepare("SELECT id,project_id AS projectId,document_id AS documentId,document_version_id AS documentVersionId,decision,reviewer,reviewed_at AS reviewedAt,notes,content_hash AS contentHash,evidence_binding_hash AS evidenceBindingHash,proposal_input_hash AS proposalInputHash FROM document_approvals WHERE project_id=? AND document_id=? AND document_version_id=?").get(projectId, documentId, documentVersionId) as HumanApproval | undefined;
 }
 
 export function savePublicationStatusOverride(input: Omit<PublicationStatusOverride, "id" | "reviewedAt" | "decision"> & Partial<Pick<PublicationStatusOverride, "id" | "reviewedAt">>) {

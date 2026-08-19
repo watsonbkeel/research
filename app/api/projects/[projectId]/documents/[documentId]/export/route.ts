@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject } from "@/lib/portfolio";
-import { getProjectDocument, documentForVersion } from "@/lib/project-documents";
+import { getProjectDocument, documentForVersion, formalExportSnapshot } from "@/lib/project-documents";
 import { exportProjectDocumentDocx, exportProjectDocumentMarkdown, safeFileSlug } from "@/lib/project-document-exporter";
 import { readWorkspace } from "@/lib/storage";
 import { runCitationAudit } from "@/lib/citation-audit";
@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export async function GET(request: Request, context: { params: Promise<{ projectId: string; documentId: string }> }) {
   const { projectId, documentId } = await context.params; const project = getProject(projectId), document = getProjectDocument(projectId, documentId);
   if (!project || !document) return NextResponse.json({ error: "项目或文档不存在。" }, { status: 404 });
-  const params = new URL(request.url).searchParams; const format = params.get("format") ?? "docx"; const formal = params.get("formal") === "1"; const versionId = params.get("versionId") ?? undefined; const slug = safeFileSlug(document.title); const workspace = await readWorkspace(projectId);
+  const params = new URL(request.url).searchParams; const format = params.get("format") ?? "docx"; const formal = params.get("formal") === "1"; const versionId = params.get("versionId") ?? undefined; const slug = safeFileSlug(document.title); const workspace = formal && versionId ? formalExportSnapshot(projectId, documentId, versionId).workspace : await readWorkspace(projectId);
   if (formal && !versionId) return NextResponse.json({ error: "正式导出必须指定 versionId。" }, { status: 400 });
   const gate = formal ? await checkFormalExportGate({ projectId, documentId, versionId }) : undefined;
   if (gate && !gate.allowed) return NextResponse.json({ error: "正式导出质量门阻断。", gate }, { status: 409 });

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { readWorkspace } from "./storage";
 import { getProjectDocument, documentForVersion, projectDocumentContentHash, type ProjectDocument } from "./project-documents";
 import { listEvidenceExcerpts, effectiveVerificationStatus } from "./evidence-excerpts";
-import { ensureEvidenceSchema } from "./evidence-store";
+import { claimEvidenceCitationBindingsForVersion, ensureEvidenceSchema } from "./evidence-store";
 import { portfolioDatabase } from "./portfolio";
 import { readPrivateSettings } from "./storage";
 import { callOpenAICompatible } from "./provider-client";
@@ -20,10 +20,11 @@ function sentenceBoundaries(rawText: string) {
   const boundaries: Array<{ start: number; end: number }> = [];
   let start = 0;
   for (let index = 0; index < rawText.length; index += 1) {
-    if (!/[.!?。！？]/u.test(rawText[index])) continue;
-    let end = index + 1;
+    const character = rawText[index]; const chineseBoundary = /[。！？；]/u.test(character) || rawText.slice(index, index + 2) === "……"; const englishBoundary = /[.!?;]/u.test(character);
+    if (!chineseBoundary && !englishBoundary) continue;
+    let end = index + (rawText.slice(index, index + 2) === "……" ? 2 : 1);
     while (/['"”’\])}]/u.test(rawText[end] ?? "")) end += 1;
-    if (end < rawText.length && !/\s|\n/u.test(rawText[end])) continue;
+    if (!chineseBoundary && end < rawText.length && !/\s|\n/u.test(rawText[end])) continue;
     if (rawText.slice(start, end).trim()) boundaries.push({ start, end });
     start = end;
     while (/\s/u.test(rawText[start] ?? "")) start += 1;
@@ -63,20 +64,20 @@ export const deterministicClaimCoverageClassifier: ClaimCoverageClassifier = { a
 export const modelClaimCoverageClassifier: ClaimCoverageClassifier = { async classify(input) { const settings = await readPrivateSettings(); const result = await callOpenAICompatible({ settings, taskType: "citation_validation", temperature: 0, systemPrompt: "Classify research prose conservatively. Return JSON only. Never treat a heading or chapter title as proof that a factual sentence is a definition or source-free method.", prompt: `Return a JSON array matching {sentenceId,classification,claimSpans:[{text,startOffset,endOffset,suggestedClaimId?}],confidence,rationaleCode}. Allowed classifications: published_fact,researcher_inference,planned_hypothesis,planned_method,literature_definition,author_defined_term,connective,heading,unknown. Section title is context only: ${input.sectionTitle}. Sentences:\n${JSON.stringify(input.sentences)}` }); const raw = result.content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""); return classificationSchema.parse(JSON.parse(raw)); } };
 
 function documentContentHash(document: ProjectDocument) { return projectDocumentContentHash(document); }
-function claimSpanIds(text: string, sectionClaimIds: string[], claims: Array<{ id: string; text: string }>, sentenceCount: number, classified?: SentenceClassificationResult) {
+function claimSpanIds(text: string, sectionClaimIds: string[], claims: Array<{ id: string; text: string }>, classified?: SentenceClassificationResult) {
   const suggested = classified?.claimSpans.map((span) => span.suggestedClaimId).filter((id): id is string => Boolean(id && sectionClaimIds.includes(id)));
   if (suggested?.length) return [...new Set(suggested)];
   const matches = claims.filter((claim) => sectionClaimIds.includes(claim.id) && claim.text.trim() && (text.includes(claim.text) || claim.text.includes(text)));
   if (matches.length) return matches.map((claim) => claim.id);
-  return sentenceCount === 1 && sectionClaimIds.length === 1 ? [...sectionClaimIds] : [];
+  return [];
 }
 
-export async function compileClaimCoverage(input: { projectId: string; documentId: string; versionId?: string; documentVersionId?: string; documentOverride?: ProjectDocument; persist?: boolean; classifier?: ClaimCoverageClassifier; classifierMode?: "model" | "deterministic" }): Promise<ClaimCoverageReport> {
+export async function compileClaimCoverage(input: { projectId: string; documentId: string; versionId?: string; documentVersionId?: string; documentOverride?: ProjectDocument; persist?: boolean; classifier?: ClaimCoverageClassifier; classifierMode?: "model" | "deterministic"; provisionalBindings?: import("./types").ClaimEvidenceCitationBinding[] }): Promise<ClaimCoverageReport> {
   ensureEvidenceSchema();
   const current = getProjectDocument(input.projectId, input.documentId); if (!current) throw new Error("文档不存在。");
   const document = input.documentOverride ?? (input.versionId ? documentForVersion(current, input.versionId) : current); if (!document) throw new Error("指定 DocumentVersion 不存在。");
-  const workspace = await readWorkspace(input.projectId); const excerpts = await listEvidenceExcerpts({ projectId: input.projectId });
-  const versionId = input.documentVersionId ?? input.versionId ?? document.currentVersionId ?? document.manuscript.version; const contentHash = documentContentHash(document); const classifier = input.classifier ?? (input.classifierMode === "model" ? modelClaimCoverageClassifier : deterministicClaimCoverageClassifier);
+  const workspace = document.versionSnapshot?.workspaceSnapshot ?? await readWorkspace(input.projectId); const excerpts = document.versionSnapshot?.evidenceExcerptsSnapshot as Awaited<ReturnType<typeof listEvidenceExcerpts>> | undefined ?? await listEvidenceExcerpts({ projectId: input.projectId });
+  const versionId = input.documentVersionId ?? input.versionId ?? document.currentVersionId ?? document.manuscript.version; const contentHash = documentContentHash(document); const classifier = input.classifier ?? (input.classifierMode === "model" ? modelClaimCoverageClassifier : deterministicClaimCoverageClassifier); const bindings = input.provisionalBindings ?? claimEvidenceCitationBindingsForVersion(input.projectId, input.documentId, versionId);
   const paragraphs: ParagraphCoverage[] = []; const blockers: AuditIssue[] = []; const warnings: AuditIssue[] = [];
   let sentenceCount = 0, publishedFactCount = 0, supportedPublishedFactCount = 0, unsupportedPublishedFactCount = 0, unknownCount = 0;
   for (const chapter of document.manuscript.chapters) for (const section of chapter.sections) {
@@ -88,9 +89,10 @@ export async function compileClaimCoverage(input: { projectId: string; documentI
       let classified: SentenceClassificationResult[];
       try { classified = classificationSchema.parse(await classifier.classify({ projectId: input.projectId, documentId: input.documentId, sectionId: section.id, sectionTitle: section.title, paragraph, sentences: sentenceInputs })); } catch (error) { classified = sentenceInputs.map((sentence) => ({ sentenceId: sentence.sentenceId, classification: "unknown", claimSpans: [], confidence: 0, rationaleCode: "classifier-unavailable" })); warnings.push({ code: "classifier-unavailable", severity: "warning", message: error instanceof Error ? error.message : "Claim classifier unavailable", sectionId: section.id }); }
       const sentences = sentenceInputs.map((sentence) => {
-        const model = classified.find((item) => item.sentenceId === sentence.sentenceId); const deterministic = deterministicClassification(sentence.text); const safetyOverride = model?.rationaleCode !== "classifier-unavailable" && ["published_fact", "literature_definition", "author_defined_term", "planned_method", "planned_hypothesis"].includes(deterministic); const classification = safetyOverride ? deterministic : model?.classification ?? "unknown"; const claimIds = claimSpanIds(sentence.text, section.claimIds, workspace.claims, sentenceInputs.length, model); const evidence = excerpts.filter((excerpt) => claimIds.includes(excerpt.claimId ?? "") && effectiveVerificationStatus(excerpt) !== "rejected"); const citations = paragraph.citations.filter((citation) => citation.startOffset < sentence.endOffset && citation.endOffset > sentence.startOffset); const citationWorkIds = citations.map((citation) => citation.workId);
+        const model = classified.find((item) => item.sentenceId === sentence.sentenceId); const deterministic = deterministicClassification(sentence.text); const safetyOverride = model?.rationaleCode !== "classifier-unavailable" && ["published_fact", "literature_definition", "author_defined_term", "planned_method", "planned_hypothesis"].includes(deterministic); const classification = safetyOverride ? deterministic : model?.classification ?? "unknown"; const claimIds = claimSpanIds(sentence.text, section.claimIds, workspace.claims, model); const evidence = excerpts.filter((excerpt) => claimIds.includes(excerpt.claimId ?? "") && effectiveVerificationStatus(excerpt) !== "rejected"); const citations = paragraph.citations.filter((citation) => citation.startOffset < sentence.endOffset && citation.endOffset > sentence.startOffset); const citationWorkIds = citations.map((citation) => citation.workId);
         const requiresEvidence = ["published_fact", "literature_definition", "planned_method", "planned_hypothesis"].includes(classification);
-        const coverageStatus = classification === "connective" || classification === "heading" || classification === "author_defined_term" ? "not_required" : classification === "unknown" ? "unclassified" : claimIds.length && (!requiresEvidence || evidence.length > 0) ? "covered" : "unsupported";
+        const exactEvidence = claimIds.flatMap((claimId) => bindings.filter((binding) => binding.sentenceId === sentence.sentenceId && binding.claimId === claimId && binding.documentVersionId === versionId && ["supports", "qualifies"].includes(binding.relation)).map((binding) => ({ binding, excerpt: evidence.find((item) => item.id === binding.evidenceExcerptId), citation: citations.find((item) => item.citationItemId === binding.citationItemId) }))).filter((item) => item.excerpt && item.citation && item.excerpt.workId === item.binding.workId && item.citation.workId === item.binding.workId && effectiveVerificationStatus(item.excerpt) === "human_verified" && Boolean(item.excerpt.page || item.excerpt.locator) && item.excerpt.supportDirection !== "contradicting");
+        const coverageStatus = classification === "connective" || classification === "heading" || classification === "author_defined_term" ? "not_required" : classification === "unknown" ? "unclassified" : claimIds.length && (!requiresEvidence || (citations.length > 0 && exactEvidence.length > 0)) ? "covered" : "unsupported";
         sentenceCount += 1; if (classification === "published_fact" || classification === "literature_definition") publishedFactCount += 1; if ((classification === "published_fact" || classification === "literature_definition") && coverageStatus === "covered") supportedPublishedFactCount += 1; if ((classification === "published_fact" || classification === "literature_definition") && coverageStatus !== "covered") unsupportedPublishedFactCount += 1; if (classification === "unknown") unknownCount += 1;
         if (document.evidenceMode === "formal") { if (classification === "unknown") blockers.push({ code: "unknown-sentence", severity: "blocker", message: `句子无法安全分类：${sentence.text.slice(0, 180)}`, sectionId: section.id }); if (requiresEvidence && (!claimIds.length || !evidence.length)) blockers.push({ code: classification === "published_fact" || classification === "literature_definition" ? "uncovered-published-fact" : "uncovered-method-or-hypothesis-source", severity: "blocker", message: `该句需要精确 Claim 和 EvidenceExcerpt：${sentence.text.slice(0, 180)}`, sectionId: section.id, claimId: claimIds[0] }); }
         return { sentenceId: sentence.sentenceId, text: sentence.text, startOffset: sentence.startOffset, endOffset: sentence.endOffset, classification, claimId: claimIds[0], claimIds, evidenceExcerptIds: [...new Set(evidence.map((item) => item.id))], citationWorkIds, citationItemIds: citations.map((item) => item.citationItemId), coverageStatus: coverageStatus as ParagraphCoverage["sentences"][number]["coverageStatus"] };

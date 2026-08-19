@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { claimCoverageForVersion } from "./claim-coverage";
 import { listEvidenceExcerpts, effectiveVerificationStatus } from "./evidence-excerpts";
 import { claimEvidenceCitationBindingsForVersion, saveClaimEvidenceCitationBinding } from "./evidence-store";
-import { getDocumentVersion } from "./project-documents";
+import { getDocumentVersion, refreshDocumentVersionEvidenceSnapshot } from "./project-documents";
 import { readWorkspace } from "./storage";
 import type { ClaimEvidenceCitationBinding } from "./types";
 
@@ -22,7 +22,9 @@ export async function createClaimEvidenceCitationBinding(input: Omit<ClaimEviden
   if (excerpt.workId !== input.workId) throw new Error("EvidenceExcerpt.workId 与 Binding.workId 不匹配。");
   if (effectiveVerificationStatus(excerpt) === "rejected") throw new Error("已拒绝或失效的 EvidenceExcerpt 不能绑定。");
   if (input.relation === "supports" && excerpt.supportDirection === "contradicting") throw new Error("Contradicting excerpt 不能声明为 supports。");
-  return saveClaimEvidenceCitationBinding({ ...input, id: input.id ?? `binding-${randomUUID()}`, createdAt: input.createdAt ?? new Date().toISOString() });
+  const binding = saveClaimEvidenceCitationBinding({ ...input, id: input.id ?? `binding-${randomUUID()}`, createdAt: input.createdAt ?? new Date().toISOString() });
+  refreshDocumentVersionEvidenceSnapshot(input.projectId, input.documentId, input.documentVersionId);
+  return binding;
 }
 
 export { claimEvidenceCitationBindingsForVersion };

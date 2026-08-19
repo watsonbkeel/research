@@ -7,14 +7,38 @@ import { readInstitutionProfile } from "./institution";
 import { readReviewWorkflow } from "./review-workflow";
 import { readMaterialRegistry } from "./materials";
 import { readDatasetRegistry } from "./datasets";
-import { getDefaultProjectId, getProject } from "./portfolio";
+import { getDefaultProjectId, getProject, portfolioDatabase } from "./portfolio";
 import { ensureProjectProposal, listProjectDocuments } from "./project-documents";
+import { ensureEvidenceSchema } from "./evidence-store";
+import { randomUUID } from "node:crypto";
 
 export interface QualityReport {
+  id?: string;
+  projectId?: string;
+  documentId?: string;
+  documentVersionId?: string;
+  contentHash?: string;
   generatedAt: string;
   errors: string[];
   warnings: string[];
   checks: Array<{ id: string; label: string; status: "pass" | "warning" | "error"; detail: string }>;
+}
+
+export function saveVersionedQualityReport(report: QualityReport & { projectId: string; documentId: string; documentVersionId: string; contentHash: string }) {
+  ensureEvidenceSchema(); const stored = { ...report, id: report.id ?? `quality-${randomUUID()}` };
+  portfolioDatabase().prepare("INSERT OR REPLACE INTO quality_reports (id,project_id,document_id,document_version_id,content_hash,payload_json,checked_at) VALUES (?,?,?,?,?,?,?)").run(stored.id, stored.projectId, stored.documentId, stored.documentVersionId, stored.contentHash, JSON.stringify(stored), stored.generatedAt);
+  return stored;
+}
+
+export function qualityReportForVersion(projectId: string, documentId: string, documentVersionId: string): QualityReport | undefined {
+  ensureEvidenceSchema();
+  const row = portfolioDatabase().prepare("SELECT payload_json AS payload FROM quality_reports WHERE project_id=? AND document_id=? AND document_version_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, documentId, documentVersionId) as { payload?: string } | undefined;
+  return row?.payload ? JSON.parse(row.payload) as QualityReport : undefined;
+}
+
+export async function buildVersionedQualityReport(projectId: string, documentId: string, documentVersionId: string) {
+  const { getDocumentVersion } = await import("./project-documents"); const version = getDocumentVersion(projectId, documentId, documentVersionId); if (!version?.contentHash) throw new Error("DocumentVersion 不存在或缺少 contentHash。");
+  const report = await buildQualityReport(projectId); return saveVersionedQualityReport({ ...report, projectId, documentId, documentVersionId, contentHash: version.contentHash });
 }
 
 export async function buildQualityReport(projectId = getDefaultProjectId()): Promise<QualityReport> {

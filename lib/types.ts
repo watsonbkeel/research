@@ -214,6 +214,8 @@ export interface CitationAuditReport {
 
 export type CoverageClassification = "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method" | "literature_definition" | "author_defined_term" | "definition" | "connective" | "heading" | "unknown";
 export interface CitationOffset { citationItemId: string; workId: string; startOffset: number; endOffset: number; locatorType?: string; locator?: string }
+export interface CitationItem { id: string; workId: string; locatorType?: "page" | "chapter" | "section" | "paragraph" | "figure" | "table"; locator?: string; prefix?: string; suffix?: string; suppressAuthor?: boolean }
+export interface CitationCluster { id: string; sectionId: string; sentenceId: string; position: number; mode: "parenthetical" | "narrative"; items: CitationItem[] }
 export interface ParsedParagraph { paragraphId: string; rawText: string; plainText: string; startOffset: number; endOffset: number; citations: CitationOffset[] }
 export interface SentenceClassificationResult { sentenceId: string; classification: Exclude<CoverageClassification, "definition">; claimSpans: Array<{ text: string; startOffset: number; endOffset: number; suggestedClaimId?: string }>; confidence: number; rationaleCode: string }
 export interface ClaimEvidenceCitationBinding { id: string; projectId: string; documentId: string; documentVersionId: string; sectionId: string; sentenceId: string; claimId: string; evidenceExcerptId: string; workId: string; citationItemId: string; relation: "supports" | "qualifies" | "contradicts" | "background"; createdAt: string }
@@ -250,6 +252,25 @@ export interface DocumentVersion {
   title?: string; researchMode?: string; evidenceMode?: string; targetVenue?: string; institutionProfileId?: string;
   sections: Array<{ sectionId: string; chapterId?: string; title: string; order?: number; content: string; claimIds: string[]; citationIds: string[]; citationItemIds?: string[]; evidenceExcerptIds: string[]; evidenceBundleId?: string; unsupportedStatements: string[] | Array<{ statement: string; reason: string }>; evidenceGaps: string[] | Array<{ description: string; requiredEvidenceType?: string }>; contentHash: string }>;
   claimEvidenceCitationBindings?: ClaimEvidenceCitationBinding[];
+  citationStyle?: "APA 7" | "GB/T 7714";
+  claims?: Claim[];
+  works?: Work[];
+  citationItems?: CitationItem[];
+  citationClusters?: CitationCluster[];
+  evidenceReferences?: Array<{ evidenceExcerptId: string; evidenceExcerptHash: string; workId: string; verificationStatus: string; locator?: string }>;
+  evidenceExcerptsSnapshot?: unknown[];
+  publicationStatusSnapshot?: PublicationStatusCheckResult[];
+  workspaceSnapshot?: WorkspaceData;
+  researchPlanSnapshot?: unknown;
+  researchQuestionsSnapshot?: unknown;
+  constructsSnapshot?: unknown;
+  hypothesesSnapshot?: unknown;
+  experimentsSnapshot?: unknown;
+  institutionProfileSnapshot?: unknown;
+  evidenceBindingHash?: string;
+  proposalInputHash?: string;
+  lifecycleStatus?: "pending_validation" | "reviewable" | "quarantined";
+  idempotencyKey?: string;
   manuscriptSnapshot?: import("./manuscript").Manuscript;
   contentHash?: string;
   citationAuditReportId?: string;
@@ -307,6 +328,9 @@ export interface HumanApproval {
   decision: "approved" | "changes_requested";
   reviewer: string;
   reviewedAt: string;
+  contentHash?: string;
+  evidenceBindingHash?: string;
+  proposalInputHash?: string;
   notes?: string;
 }
 

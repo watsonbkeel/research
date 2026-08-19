@@ -1,11 +1,12 @@
 import { getProject } from "./portfolio";
-import { getProjectDocument, documentForVersion, documentVersionContentHash, getDocumentVersion, projectDocumentContentHash } from "./project-documents";
+import { getProjectDocument, documentForVersion, documentVersionContentHash, documentVersionEvidenceBindingHash, documentVersionProposalInputHash, getDocumentVersion, projectDocumentContentHash } from "./project-documents";
 import { readWorkspace } from "./storage";
 import { listCandidateRecords, latestPublicationStatusCheck, saveExportAuditManifest, consistencyReviewForVersion, documentApprovalForVersion, publicationStatusOverrideForVersion } from "./evidence-store";
 import { listEvidenceExcerpts } from "./evidence-excerpts";
 import { runCitationAudit } from "./citation-audit";
 import { claimCoverageForVersion } from "./claim-coverage";
 import type { ExportAuditManifest, FormalExportGateResult } from "./types";
+import { qualityReportForVersion } from "./quality";
 
 export async function checkFormalExportGate(input: { projectId: string; documentId: string; versionId?: string }): Promise<FormalExportGateResult & { manifest?: ExportAuditManifest }> {
   const project = getProject(input.projectId); const document = getProjectDocument(input.projectId, input.documentId);
@@ -16,8 +17,13 @@ export async function checkFormalExportGate(input: { projectId: string; document
   if (input.versionId && !versionDocument) blockers.push({ code: "version-not-found", message: "指定的不可变文档版本不存在。" });
   const snapshot = input.versionId ? getDocumentVersion(input.projectId, input.documentId, input.versionId) : undefined;
   if (snapshot && snapshot.contentHash && documentVersionContentHash(snapshot) !== snapshot.contentHash) blockers.push({ code: "version-hash-invalid", message: "指定文档版本快照的 contentHash 校验失败。" });
+  if (snapshot) {
+    if (snapshot.lifecycleStatus !== "reviewable") blockers.push({ code: "version-not-reviewable", message: "指定文档版本尚未通过持久化复审，不能正式导出。" });
+    if (snapshot.evidenceBindingHash !== documentVersionEvidenceBindingHash(snapshot)) blockers.push({ code: "evidence-binding-hash-invalid", message: "指定文档版本冻结的证据链 hash 校验失败。" });
+    if (snapshot.proposalInputHash !== documentVersionProposalInputHash(snapshot)) blockers.push({ code: "proposal-input-hash-invalid", message: "指定文档版本冻结的开题输入 hash 校验失败。" });
+  }
   const reviewedDocument = versionDocument ?? document;
-  const workspace = await readWorkspace(input.projectId); const excerpts = await listEvidenceExcerpts({ projectId: input.projectId }); const candidates = listCandidateRecords(input.projectId);
+  const workspace = snapshot?.workspaceSnapshot ?? await readWorkspace(input.projectId); const excerpts = snapshot?.evidenceExcerptsSnapshot as Awaited<ReturnType<typeof listEvidenceExcerpts>> | undefined ?? await listEvidenceExcerpts({ projectId: input.projectId }); const candidates = listCandidateRecords(input.projectId);
   const citedWorkIds = [...new Set(reviewedDocument.manuscript.chapters.flatMap((chapter) => chapter.sections.flatMap((section) => section.citationIds)))];
   const citedWorks = workspace.works.filter((work) => citedWorkIds.includes(work.id));
   const humanVerifiedExcerptCount = excerpts.filter((excerpt) => excerpt.verificationStatus === "human_verified").length;
@@ -34,10 +40,14 @@ export async function checkFormalExportGate(input: { projectId: string; document
   else if (!["passed", "passed_with_warnings"].includes(consistency.status)) blockers.push({ code: "consistency-not-passed", message: `一致性审查状态为 ${consistency.status}。` });
   const approval = input.versionId ? documentApprovalForVersion(input.projectId, input.documentId, input.versionId) : undefined;
   if (!approval || approval.decision !== "approved" || !approval.reviewer.trim() || !approval.reviewedAt) blockers.push({ code: "human-approval-required", message: "正式导出需要精确绑定该版本、含 reviewer 和 reviewedAt 的独立人工批准。" });
+  else if (!snapshot || approval.contentHash !== snapshot.contentHash || approval.evidenceBindingHash !== snapshot.evidenceBindingHash || approval.proposalInputHash !== snapshot.proposalInputHash) blockers.push({ code: "approval-hash-mismatch", message: "HumanApproval 未绑定指定版本当前的 content/evidence/proposal hash。" });
+  const quality = input.versionId ? qualityReportForVersion(input.projectId, input.documentId, input.versionId) : undefined;
+  if (!quality || quality.documentVersionId !== input.versionId || quality.contentHash !== snapshot?.contentHash) blockers.push({ code: "quality-report-version-mismatch", message: "缺少与指定版本及 contentHash 精确匹配的 QualityReport。" });
+  else if (quality.errors.length) blockers.push({ code: "quality-report-errors", message: `QualityReport 仍有 ${quality.errors.length} 个 error。` });
   const requiredSections = reviewedDocument.manuscript.chapters.filter((chapter) => chapter.sections.length > 0);
   for (const chapter of requiredSections) if (chapter.sections.every((section) => !section.content.trim())) blockers.push({ code: "required-section-empty", message: `章节 ${chapter.number} ${chapter.title} 为空。`, sectionId: chapter.id });
   for (const work of citedWorks) {
-    const check = latestPublicationStatusCheck(input.projectId, work.id);
+    const check = snapshot?.publicationStatusSnapshot?.filter((item) => item.workId === work.id).at(-1) ?? latestPublicationStatusCheck(input.projectId, work.id);
     if (!check || check.checkState !== "checked") blockers.push({ code: "publication-status-unchecked", message: `Work ${work.id} 尚未完成发表状态检查。`, workId: work.id });
     else if (["retracted", "expression_of_concern"].includes(check.status)) blockers.push({ code: `publication-${check.status}`, message: `Work ${work.id} 的发表状态为 ${check.status}。`, workId: work.id });
     else if (check.status === "corrected") warnings.push({ code: "publication-corrected", message: `Work ${work.id} 存在更正记录。` });
@@ -47,11 +57,11 @@ export async function checkFormalExportGate(input: { projectId: string; document
   if (audit.warnings.length) warnings.push(...audit.warnings.map((item) => ({ code: `citation-audit:${item.code}`, message: item.message })));
   const coveredClaimCount = coverage?.paragraphs.flatMap((paragraph) => paragraph.sentences).filter((sentence) => sentence.coverageStatus === "covered").length ?? 0;
   const unsupportedClaimCount = coverage?.paragraphs.flatMap((paragraph) => paragraph.sentences).filter((sentence) => ["unsupported", "unclassified"].includes(sentence.coverageStatus)).length ?? 0;
-  const result: FormalExportGateResult & { manifest?: ExportAuditManifest } = { allowed: blockers.length === 0, blockers, warnings, evidenceSummary: { candidateCount: candidates.length, verifiedWorkCount: workspace.works.filter((work) => work.bibliographicStatus === "verified").length, citedWorkCount: citedWorks.length, humanVerifiedExcerptCount, coveredClaimCount, unsupportedClaimCount, unknownPublicationStatusCount: citedWorks.filter((work) => { const check = latestPublicationStatusCheck(input.projectId, work.id); return !check || check.status === "unknown"; }).length } };
+  const statusFor = (workId: string) => snapshot?.publicationStatusSnapshot?.filter((item) => item.workId === workId).at(-1) ?? latestPublicationStatusCheck(input.projectId, workId); const result: FormalExportGateResult & { manifest?: ExportAuditManifest } = { allowed: blockers.length === 0, blockers, warnings, evidenceSummary: { candidateCount: candidates.length, verifiedWorkCount: workspace.works.filter((work) => work.bibliographicStatus === "verified").length, citedWorkCount: citedWorks.length, humanVerifiedExcerptCount, coveredClaimCount, unsupportedClaimCount, unknownPublicationStatusCount: citedWorks.filter((work) => { const check = statusFor(work.id); return !check || check.status === "unknown"; }).length } };
   if (result.allowed) {
     const versionId = input.versionId ?? document.currentVersionId!;
     const contentHash = projectDocumentContentHash(reviewedDocument);
-    result.manifest = saveExportAuditManifest({ projectId: input.projectId, documentId: input.documentId, versionId, exportedAt: new Date().toISOString(), citationAuditReportId: audit.id, consistencyReviewReportId: consistency?.id ?? "", claimCoverageReportId: coverage?.id ?? "", humanApproval: { status: approval?.decision ?? "not_reviewed", reviewer: approval?.reviewer, reviewedAt: approval?.reviewedAt }, evidenceSummary: { citedWorks: citedWorks.length, bibliographicallyVerifiedWorks: citedWorks.filter((work) => work.bibliographicStatus === "verified").length, publicationStatusCheckedWorks: citedWorks.filter((work) => latestPublicationStatusCheck(input.projectId, work.id)?.checkState === "checked").length, humanVerifiedExcerpts: humanVerifiedExcerptCount, supportedPublishedFacts: coveredClaimCount, unsupportedPublishedFacts: unsupportedClaimCount }, blockers: 0, warnings: warnings.length, contentHash });
+    result.manifest = saveExportAuditManifest({ projectId: input.projectId, documentId: input.documentId, versionId, exportedAt: new Date().toISOString(), citationAuditReportId: audit.id, consistencyReviewReportId: consistency?.id ?? "", claimCoverageReportId: coverage?.id ?? "", humanApproval: { status: approval?.decision ?? "not_reviewed", reviewer: approval?.reviewer, reviewedAt: approval?.reviewedAt }, evidenceSummary: { citedWorks: citedWorks.length, bibliographicallyVerifiedWorks: citedWorks.filter((work) => work.bibliographicStatus === "verified").length, publicationStatusCheckedWorks: citedWorks.filter((work) => statusFor(work.id)?.checkState === "checked").length, humanVerifiedExcerpts: humanVerifiedExcerptCount, supportedPublishedFacts: coveredClaimCount, unsupportedPublishedFacts: unsupportedClaimCount }, blockers: 0, warnings: warnings.length, contentHash });
   }
   return result;
 }

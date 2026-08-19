@@ -66,7 +66,7 @@ beforeEach(() => {
     failures: [],
     providers: ["openalex"],
   });
-  mocks.generateStructuredSection.mockImplementation(async (input: { sectionId: string }) => ({ status: "promoted", version: { id: `draft-${input.sectionId}`, evidenceBundleId: `bundle-${input.sectionId}`, citationIds: [], evidenceExcerptIds: [] }, audit: { id: `audit-${input.sectionId}`, status: "passed", blockers: [], warnings: [] } }));
+  mocks.generateStructuredSection.mockImplementation(async (input: { sectionId: string }) => ({ status: "promoted", documentVersion: { id: `document-version-${input.sectionId}`, sections: [{ sectionId: input.sectionId, evidenceBundleId: `bundle-${input.sectionId}`, citationIds: [], evidenceExcerptIds: [] }] }, audit: { id: `audit-${input.sectionId}`, status: "passed", blockers: [], warnings: [] } }));
   mocks.runConsistencyReview.mockResolvedValue({ id: "consistency-1", status: "passed", issues: [], humanApproval: "not_reviewed" });
 });
 
@@ -198,7 +198,7 @@ describe("research worker", () => {
     const guidance = mocks.generateStructuredSection.mock.calls[0][0].guidance as string;
     expect(guidance).toContain("虚构干预");
     expect(guidance).toContain("Fictional evidence gap");
-    expect(listArtifacts(proposal.id).map((artifact) => artifact.type)).toContain("draft-version");
+    expect(listArtifacts(proposal.id).map((artifact) => artifact.type)).toContain("document-version");
   });
 
   it("retries only the failed proposal section and preserves completed sections", async () => {
@@ -206,9 +206,9 @@ describe("research worker", () => {
     process.env.RESEARCH_STAGE_MAX_RETRIES = "2";
     process.env.RESEARCH_RETRY_BASE_MS = "1";
     mocks.generateStructuredSection
-      .mockResolvedValueOnce({ status: "promoted", version: { id: "draft-1", evidenceBundleId: "bundle-1", citationIds: [], evidenceExcerptIds: [] }, audit: { id: "audit-1", status: "passed", blockers: [], warnings: [] } })
+      .mockResolvedValueOnce({ status: "promoted", documentVersion: { id: "document-version-1", sections: [{ sectionId: "section-1", evidenceBundleId: "bundle-1", citationIds: [], evidenceExcerptIds: [] }] }, audit: { id: "audit-1", status: "passed", blockers: [], warnings: [] } })
       .mockRejectedValueOnce(new ProviderCallError("Provider unavailable", "provider_unavailable", []))
-      .mockResolvedValueOnce({ status: "promoted", version: { id: "draft-2", evidenceBundleId: "bundle-2", citationIds: [], evidenceExcerptIds: [] }, audit: { id: "audit-2", status: "passed", blockers: [], warnings: [] } });
+      .mockResolvedValueOnce({ status: "promoted", documentVersion: { id: "document-version-2", sections: [{ sectionId: "section-2", evidenceBundleId: "bundle-2", citationIds: [], evidenceExcerptIds: [] }] }, audit: { id: "audit-2", status: "passed", blockers: [], warnings: [] } });
     const conversation = createConversation({ title: "Proposal retry" });
     const proposal = createResearchJob({ conversationId: conversation.id, prompt: "Generate proposal", kind: "proposal-generation", input: { projectId: project.id } });
 

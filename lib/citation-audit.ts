@@ -7,11 +7,11 @@ import { parseCitationTokens, renderCitationTokens } from "./citation-service";
 import { fullTextContainsQuote } from "./full-text";
 import type { AuditIssue, CitationAuditReport } from "./types";
 import type { ProjectDocument } from "./project-documents";
-import { compileClaimCoverage } from "./claim-coverage";
+import { compileClaimCoverage, type ClaimCoverageClassifier } from "./claim-coverage";
 
-export async function runCitationAudit(input: { projectId: string; documentId: string; versionId?: string; formal?: boolean; documentOverride?: ProjectDocument; persist?: boolean }) {
+export async function runCitationAudit(input: { projectId: string; documentId: string; versionId?: string; formal?: boolean; documentOverride?: ProjectDocument; persist?: boolean; provisionalBindings?: import("./types").ClaimEvidenceCitationBinding[]; classifier?: ClaimCoverageClassifier }) {
   const baseDocument = getProjectDocument(input.projectId, input.documentId); if (!baseDocument) throw new Error("文档不存在。");
-  const document = input.documentOverride ?? (input.versionId ? documentForVersion(baseDocument, input.versionId) : baseDocument); if (!document) throw new Error("指定文档版本不存在。"); const workspace = await readWorkspace(input.projectId); const excerpts = await listEvidenceExcerpts({ projectId: input.projectId });
+  const document = input.documentOverride ?? (input.versionId ? documentForVersion(baseDocument, input.versionId) : baseDocument); if (!document) throw new Error("指定文档版本不存在。"); const workspace = document.versionSnapshot?.workspaceSnapshot ?? await readWorkspace(input.projectId); const excerpts = document.versionSnapshot?.evidenceExcerptsSnapshot as Awaited<ReturnType<typeof listEvidenceExcerpts>> | undefined ?? await listEvidenceExcerpts({ projectId: input.projectId });
   const formal = input.formal ?? document.evidenceMode === "formal";
   const blockers: AuditIssue[] = [], warnings: AuditIssue[] = [], cited = new Set<string>(); const works = new Map(workspace.works.map((work) => [work.id, work]));
   for (const section of document.manuscript.chapters.flatMap((chapter) => chapter.sections)) {
@@ -51,9 +51,9 @@ export async function runCitationAudit(input: { projectId: string; documentId: s
   }
   const referencedInSections = new Set(document.manuscript.chapters.flatMap((chapter) => chapter.sections.flatMap((section) => section.citationIds)));
   for (const id of cited) if (!referencedInSections.has(id)) warnings.push({ code: "citation-reference-mismatch", severity: "warning", message: `正文 token 的 Work ${id} 尚未同步到 section.citationIds。`, workId: id });
-  const coverage = await compileClaimCoverage({ projectId: input.projectId, documentId: input.documentId, versionId: input.versionId, documentOverride: document, persist: input.persist });
+  const coverage = await compileClaimCoverage({ projectId: input.projectId, documentId: input.documentId, versionId: input.versionId, documentOverride: document, persist: input.persist, classifier: input.classifier, provisionalBindings: input.provisionalBindings });
   const reportVersionId = input.versionId ?? document.currentVersionId ?? document.manuscript.version;
-  const bindings = claimEvidenceCitationBindingsForVersion(input.projectId, input.documentId, reportVersionId);
+  const bindings = input.provisionalBindings ?? claimEvidenceCitationBindingsForVersion(input.projectId, input.documentId, reportVersionId);
   const sentenceMap = new Map(coverage.paragraphs.flatMap((paragraph) => paragraph.sentences).map((sentence) => [sentence.sentenceId, sentence]));
   const sectionMap = new Map(document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => [section.id, section]));
   for (const binding of bindings) {

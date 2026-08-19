@@ -4,18 +4,17 @@ import { createRequire } from "node:module";
 import { Cite } from "@citation-js/core";
 import * as CitationCore from "@citation-js/core";
 import "@citation-js/plugin-csl";
-import type { Work } from "./types";
+import type { CitationCluster, Work } from "./types";
 
 export type CitationStyle = "apa" | "gb7714";
-export interface CitationItem { id: string; workId: string; locatorType?: "page" | "chapter" | "section" | "paragraph" | "figure" | "table"; locator?: string; prefix?: string; suffix?: string; suppressAuthor?: boolean }
-export interface CitationCluster { id: string; items: CitationItem[] }
+export type { CitationCluster, CitationItem } from "./types";
 const GB7714_STYLE = "china-national-standard-gb-t-7714-2015-numeric";
 type CslRegister = { has(name: string): boolean; add(name: string, value: string): void; get(name: string): string };
 const cslConfig = (CitationCore as unknown as { plugins: { config: { get(name: string): { styles: CslRegister; locales: CslRegister } } } }).plugins.config.get("@csl");
 if (!cslConfig.styles.has(GB7714_STYLE)) cslConfig.styles.add(GB7714_STYLE, readFileSync(path.join(process.cwd(), "lib/csl/china-national-standard-gb-t-7714-2015-numeric.csl"), "utf8"));
 if (!cslConfig.locales.has("zh-CN")) cslConfig.locales.add("zh-CN", readFileSync(path.join(process.cwd(), "lib/csl/locales-zh-CN.xml"), "utf8"));
 const require = createRequire(import.meta.url);
-const Citeproc = require("citeproc") as { Engine: new (system: { retrieveLocale(locale: string): string; retrieveItem(id: string): Record<string, unknown> }, style: string, locale: string) => { updateItems(ids: string[]): void; processCitationCluster(citation: Record<string, unknown>, citationsPre: Array<[string, number]>, citationsPost: Array<[string, number]>): [unknown, Array<[number, string]>] } };
+const Citeproc = require("citeproc") as { Engine: new (system: { retrieveLocale(locale: string): string; retrieveItem(id: string): Record<string, unknown> }, style: string, locale: string) => { updateItems(ids: string[]): void; processCitationCluster(citation: Record<string, unknown>, citationsPre: Array<[string, number]>, citationsPost: Array<[string, number]>): [unknown, Array<[number, string]>]; makeBibliography(): [{ entry_ids?: string[][] }, string[]] | false } };
 
 function authors(work: Work): Array<{ family?: string; given?: string; literal?: string }> {
   if (work.authorsStructured?.length) return work.authorsStructured.map((author) => ({ family: author.family, given: author.given }));
@@ -53,7 +52,7 @@ function citationYearSuffixes(works: Work[], workIds: string[]) {
   return suffixes;
 }
 
-export function renderCitationCluster(cluster: CitationCluster, works: Work[], style: CitationStyle = "apa") {
+export function renderCitationCluster(cluster: Pick<CitationCluster, "id" | "items">, works: Work[], style: CitationStyle = "apa") {
   const records = new Map(works.map((work) => [work.id, toCslJson(work) as Record<string, unknown>])); const locale = style === "gb7714" ? "zh-CN" : "en-US"; const template = style === "gb7714" ? GB7714_STYLE : "apa";
   for (const item of cluster.items) if (!records.has(item.workId)) throw new Error(`CitationCluster references unknown Work ${item.workId}.`);
   const engine = new Citeproc.Engine({ retrieveLocale: (requested) => cslConfig.locales.get(requested) || cslConfig.locales.get(locale) || cslConfig.locales.get("en-US"), retrieveItem: (id) => records.get(id) ?? {} }, cslConfig.styles.get(template), locale); engine.updateItems(cluster.items.map((item) => item.workId));
@@ -61,14 +60,33 @@ export function renderCitationCluster(cluster: CitationCluster, works: Work[], s
   const [, updates] = engine.processCitationCluster({ citationID: cluster.id, citationItems, properties: { noteIndex: 0 } }, [], []); return updates.at(-1)?.[1] ?? "";
 }
 
-export function renderReference(work: Work, style: CitationStyle = "apa", yearSuffix = "") {
+export function renderDocumentCitationClusters(clusters: CitationCluster[], works: Work[], style: CitationStyle = "apa") {
+  const ordered = [...clusters].sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
+  const records = new Map(works.map((work) => [work.id, toCslJson(work) as Record<string, unknown>])); const locale = style === "gb7714" ? "zh-CN" : "en-US"; const template = style === "gb7714" ? GB7714_STYLE : "apa";
+  const workIds = [...new Set(ordered.flatMap((cluster) => cluster.items.map((item) => item.workId)))];
+  for (const workId of workIds) if (!records.has(workId)) throw new Error(`CitationCluster references unknown Work ${workId}.`);
+  const engine = new Citeproc.Engine({ retrieveLocale: (requested) => cslConfig.locales.get(requested) || cslConfig.locales.get(locale) || cslConfig.locales.get("en-US"), retrieveItem: (id) => records.get(id) ?? {} }, cslConfig.styles.get(template), locale); engine.updateItems(workIds);
+  const citations = new Map<string, string>(); const prior: Array<[string, number]> = [];
+  ordered.forEach((cluster, index) => {
+    const citationItems = cluster.items.map((item) => ({ id: item.workId, ...(item.locator ? { locator: item.locator, label: item.locatorType ?? "page" } : {}), ...(item.prefix ? { prefix: item.prefix } : {}), ...(item.suffix ? { suffix: item.suffix } : {}), ...(item.suppressAuthor || cluster.mode === "narrative" ? { "suppress-author": true } : {}) }));
+    const [, updates] = engine.processCitationCluster({ citationID: cluster.id, citationItems, properties: { noteIndex: index + 1 } }, prior, []); const rendered = updates.find(([position]) => position === index)?.[1] ?? updates.at(-1)?.[1]; if (!rendered) throw new Error(`citeproc did not render CitationCluster ${cluster.id}.`);
+    citations.set(cluster.id, rendered.replace(/<[^>]+>/g, "").trim()); prior.push([cluster.id, index + 1]);
+  });
+  const bibliographyResult = engine.makeBibliography(); if (!bibliographyResult) throw new Error("citeproc did not render a bibliography.");
+  const [parameters, entries] = bibliographyResult; const entryIds = parameters.entry_ids ?? workIds.map((id) => [id]);
+  const bibliography = entries.map((entry, index) => ({ workId: entryIds[index]?.[0] ?? workIds[index], text: String(entry).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() }));
+  return { citations, bibliography };
+}
+
+export function renderReference(work: Work, style: CitationStyle = "apa", yearSuffix = "", strict = false) {
   try {
     const template = style === "gb7714" ? GB7714_STYLE : "apa";
     const record: Record<string, unknown> = toCslJson(work); if (yearSuffix) record.issued = { literal: `${work.year}${yearSuffix}` };
     const text = new Cite([record]).format("bibliography", { format: "text", template, lang: style === "gb7714" ? "zh-CN" : "en-US" });
     const normalized = String(text).replace(/\s+/g, " ").trim();
     return normalized;
-  } catch {
+  } catch (error) {
+    if (strict) throw new Error(`CSL bibliography rendering failed for Work ${work.id}.`, { cause: error });
     const author = authors(work).map((item) => item.literal ?? `${item.family ?? ""}, ${item.given ?? ""}`.replace(/, $/, "")).join(", ");
     const doi = work.doi ? ` https://doi.org/${work.doi}` : work.url ? ` ${work.url}` : "";
     return `${author} (${work.year}${yearSuffix}). ${work.title}. ${work.venue}.${doi}`;

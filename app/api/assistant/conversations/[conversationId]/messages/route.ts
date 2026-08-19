@@ -3,6 +3,7 @@ import { addMessage, conversationMessageInputSchema, createProposalGenerationJob
 import { planAssistantIntent, requestsProposalGeneration } from "@/lib/assistant-intent";
 import { getProjectSnapshot, getCurrentDocument, getQualityBlockers } from "@/lib/assistant-tools";
 import { startAssistantWorkflow } from "@/lib/assistant-workflow";
+import { getProjectDocument } from "@/lib/project-documents";
 export const runtime = "nodejs";
 type Context = { params: Promise<{ conversationId: string }> };
 export async function GET(_request: Request, context: Context) { const { conversationId } = await context.params; if (!getConversation(conversationId)) return NextResponse.json({ error: "Conversation not found" }, { status: 404 }); return NextResponse.json({ messages: listMessages(conversationId) }); }
@@ -16,7 +17,13 @@ export async function POST(request: Request, context: Context) {
     const waitingJob = jobs.find((job) => job.status === "waiting-user" || job.status === "waiting-confirmation");
     const blockingJob = jobs.find((job) => ["queued", "running", "paused"].includes(job.status));
     const conversation = getConversation(conversationId)!;
-    const plan = planAssistantIntent(orchestration.data.content, { projectId: conversation.projectId, documentId: typeof conversation.metadata.documentId === "string" ? conversation.metadata.documentId : undefined });
+    let plan = planAssistantIntent(orchestration.data.content, { projectId: conversation.projectId, documentId: typeof conversation.metadata.documentId === "string" ? conversation.metadata.documentId : undefined });
+    const requestedChapter = plan.sectionId?.match(/^chapter-(\d+)-main$/)?.[1];
+    if (requestedChapter && plan.projectId && plan.documentId) {
+      const document = getProjectDocument(plan.projectId, plan.documentId);
+      const sectionId = document?.manuscript.chapters.find((chapter) => Number(chapter.number) === Number(requestedChapter))?.sections[0]?.id;
+      if (sectionId) plan = { ...plan, sectionId };
+    }
     if (blockingJob && plan.readOnly) {
       const [snapshot, document, quality] = conversation.projectId ? await Promise.all([getProjectSnapshot(conversation.projectId), getCurrentDocument(conversation.projectId, plan.documentId), getQualityBlockers(conversation.projectId, plan.documentId)]) : [undefined, undefined, undefined];
       const reply = plan.intent === "qa" ? `当前项目快照：${snapshot ? `${snapshot.project.titleEn}；${snapshot.workspace.works} 篇 Work，${snapshot.evidence.humanVerified} 条 human_verified 证据。` : "尚未绑定项目。"}` : `只读请求已执行：${plan.intent}。当前任务仍在运行，因此没有执行任何写操作。${document ? `当前文档为 ${document.title}。` : ""}${quality?.citationAudit ? ` 最近一次引用审查状态：${quality.citationAudit.status}。` : ""}`;

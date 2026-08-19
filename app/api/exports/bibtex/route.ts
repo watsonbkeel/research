@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { exportBibtex } from "@/lib/exporters";
 import { getProject } from "@/lib/portfolio";
-import { getProjectDocument, documentForVersion } from "@/lib/project-documents";
+import { getProjectDocument, documentForVersion, formalExportSnapshot } from "@/lib/project-documents";
 import { readWorkspace } from "@/lib/storage";
 import { runCitationAudit } from "@/lib/citation-audit";
 import { checkFormalExportGate } from "@/lib/formal-export-gate";
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
   const exportDocument = versionId ? documentForVersion(document, versionId) : document; if (!exportDocument) return NextResponse.json({ error: "指定版本不存在。" }, { status: 404 });
   if (!formal) await runCitationAudit({ projectId, documentId, versionId, formal: false, documentOverride: exportDocument });
   const citedWorkIds = [...new Set(exportDocument.manuscript.chapters.flatMap((chapter) => chapter.sections.flatMap((section) => section.citationIds)))];
-  const body = exportBibtex(await readWorkspace(projectId), citedWorkIds);
+  const body = exportBibtex(formal && versionId ? formalExportSnapshot(projectId, documentId, versionId).workspace : await readWorkspace(projectId), citedWorkIds);
   return new Response(body, {
     headers: {
       "content-type": "application/x-bibtex; charset=utf-8",

@@ -11,7 +11,8 @@
     "start": "NEXT_DIST_DIR=.next-build next start --port 3002",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:formal-e2e": "vitest run tests/formal-doctoral-proposal.e2e.test.ts"
   },
   "dependencies": {
     "@citation-js/core": "^0.8.2",

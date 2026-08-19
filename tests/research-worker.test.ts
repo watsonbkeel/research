@@ -6,12 +6,13 @@ const mocks = vi.hoisted(() => ({
   callProvider: vi.fn(),
   recordAttempts: vi.fn(),
   search: vi.fn(),
-  saveSectionDraft: vi.fn(),
+  generateStructuredSection: vi.fn(),
+  runConsistencyReview: vi.fn(),
 }));
 
 vi.mock("@/lib/storage", () => ({
   readPrivateSettings: vi.fn(async () => ({ profiles: [], routes: [], allowFullText: false })),
-  readWorkspace: vi.fn(async () => ({ project: { titleEn: "AI-assisted descriptions in C2C resale markets" } })),
+  readWorkspace: vi.fn(async () => ({ project: { titleEn: "Fictional doctoral project" } })),
   recordGenerationAttempts: mocks.recordAttempts,
 }));
 
@@ -31,22 +32,26 @@ vi.mock("@/lib/provider-client", () => ({
 
 vi.mock("@/lib/assistant-search", () => ({ searchAcademicMetadata: mocks.search }));
 
-vi.mock("@/lib/manuscript", () => ({
-  readManuscript: vi.fn(() => ({
-    id: "manuscript-1",
-    title: "AI and buyer responses",
+vi.mock("@/lib/project-documents", () => ({
+  ensureProjectProposal: vi.fn(() => ({
+    id: "document-1",
+    manuscript: {
+      id: "document-1",
+      title: "Fictional doctoral project",
     chapters: [{ id: "chapter-1", title: "Introduction", sections: [
       { id: "section-1", number: "1.1", title: "Background", targetWords: 500, researchStatus: "planned" },
       { id: "section-2", number: "1.2", title: "Research problem", targetWords: 500, researchStatus: "planned" },
-    ] }],
+      ] }],
+    },
   })),
-  saveSectionDraft: mocks.saveSectionDraft,
 }));
 
-vi.mock("@/lib/evidence-excerpts", () => ({ listEvidenceExcerpts: vi.fn(async () => []) }));
+vi.mock("@/lib/generation-service", () => ({ generateStructuredSection: mocks.generateStructuredSection, proposeSectionRevision: vi.fn() }));
+vi.mock("@/lib/consistency-review", () => ({ runConsistencyReview: mocks.runConsistencyReview }));
 
 import { addArtifact, addMessage, claimNextJob, createConversation, createResearchJob, getResearchJob, listArtifacts, listCandidates, listJobEvents, listMessages, listResearchJobs, transitionJob } from "@/lib/assistant";
 import { ProviderCallError } from "@/lib/provider-client";
+import { createProject } from "@/lib/portfolio";
 import { runResearchWorker } from "@/scripts/research-worker";
 
 const dirs: string[] = [];
@@ -61,7 +66,8 @@ beforeEach(() => {
     failures: [],
     providers: ["openalex"],
   });
-  mocks.saveSectionDraft.mockReturnValue({ version: { id: "draft-1" } });
+  mocks.generateStructuredSection.mockImplementation(async (input: { sectionId: string }) => ({ status: "promoted", version: { id: `draft-${input.sectionId}`, evidenceBundleId: `bundle-${input.sectionId}`, citationIds: [], evidenceExcerptIds: [] }, audit: { id: `audit-${input.sectionId}`, status: "passed", blockers: [], warnings: [] } }));
+  mocks.runConsistencyReview.mockResolvedValue({ id: "consistency-1", status: "passed", issues: [], humanApproval: "not_reviewed" });
 });
 
 afterEach(() => {
@@ -71,6 +77,10 @@ afterEach(() => {
   delete process.env.RESEARCH_STAGE_MAX_RETRIES;
   delete process.env.RESEARCH_RETRY_BASE_MS;
 });
+
+function createFixtureProject() {
+  return createProject({ titleEn: "Fictional doctoral project", titleZh: "虚构博士项目", field: "Research methods", context: "Fictional context", institution: "Example University", primaryOutcome: "Outcome", secondaryOutcome: "Secondary outcome" });
+}
 
 describe("research worker", () => {
   it("searches metadata and persists a feasibility result for confirmation", async () => {
@@ -173,44 +183,46 @@ describe("research worker", () => {
   });
 
   it("uses conversation context and the feasibility report when saving proposal drafts", async () => {
-    mocks.callProvider.mockResolvedValue({
-      content: "This proposed study will test how AI disclosure affects seller-contact intention.",
-      profile: { id: "profile-a", name: "Model A", provider: "test", baseUrl: "https://example.test/v1", model: "test-model", priority: 1 },
-      attempts: [],
-    });
+    const project = createFixtureProject();
     const conversation = createConversation({ title: "Proposal" });
-    addMessage(conversation.id, { role: "user", content: "研究 AI 声明对买家联系卖家意愿的影响。" });
+    addMessage(conversation.id, { role: "user", content: "研究一个虚构干预对结果校准的影响。" });
     const assessment = createResearchJob({ conversationId: conversation.id, prompt: "Research idea", kind: "idea-assessment", input: { profileId: "profile-a" } });
     claimNextJob("setup-worker");
-    addArtifact({ jobId: assessment.id, type: "feasibility-report", content: { verdict: "promising", researchGap: "Limited evidence in C2C resale" } });
+    addArtifact({ jobId: assessment.id, type: "feasibility-report", content: { verdict: "promising", researchGap: "Fictional evidence gap" } });
     transitionJob(assessment.id, "completed");
-    const proposal = createResearchJob({ conversationId: conversation.id, prompt: "Research idea", kind: "proposal-generation", input: { feasibilityJobId: assessment.id, profileId: "profile-a", stage: "proposal-outline" } });
+    const proposal = createResearchJob({ conversationId: conversation.id, prompt: "Research idea", kind: "proposal-generation", input: { projectId: project.id, feasibilityJobId: assessment.id, profileId: "profile-a", stage: "proposal-outline" } });
 
     await runResearchWorker({ once: true, workerId: "test-worker" });
 
-    expect(getResearchJob(proposal.id)).toMatchObject({ status: "completed", stage: "proposal-draft", progress: 100 });
-    expect(mocks.saveSectionDraft).toHaveBeenCalledWith(expect.objectContaining({ manuscriptId: "manuscript-1", sectionId: "section-1", content: expect.stringContaining("proposed study") }));
-    const providerPrompt = mocks.callProvider.mock.calls[0][0].prompt as string;
-    expect(providerPrompt).toContain("研究 AI 声明");
-    expect(providerPrompt).toContain("Limited evidence in C2C resale");
+    expect(getResearchJob(proposal.id)).toMatchObject({ status: "completed", stage: "consistency-review", progress: 100 });
+    const guidance = mocks.generateStructuredSection.mock.calls[0][0].guidance as string;
+    expect(guidance).toContain("虚构干预");
+    expect(guidance).toContain("Fictional evidence gap");
     expect(listArtifacts(proposal.id).map((artifact) => artifact.type)).toContain("draft-version");
   });
 
   it("retries only the failed proposal section and preserves completed sections", async () => {
+    const project = createFixtureProject();
     process.env.RESEARCH_STAGE_MAX_RETRIES = "2";
     process.env.RESEARCH_RETRY_BASE_MS = "1";
-    mocks.callProvider
-      .mockResolvedValueOnce({ content: "Completed section one.", profile: { id: "profile-a", name: "Model A", provider: "test", model: "test-model" }, attempts: [] })
+    mocks.generateStructuredSection
+      .mockResolvedValueOnce({ status: "promoted", version: { id: "draft-1", evidenceBundleId: "bundle-1", citationIds: [], evidenceExcerptIds: [] }, audit: { id: "audit-1", status: "passed", blockers: [], warnings: [] } })
       .mockRejectedValueOnce(new ProviderCallError("Provider unavailable", "provider_unavailable", []))
-      .mockResolvedValueOnce({ content: "Completed section two.", profile: { id: "profile-a", name: "Model A", provider: "test", model: "test-model" }, attempts: [] });
+      .mockResolvedValueOnce({ status: "promoted", version: { id: "draft-2", evidenceBundleId: "bundle-2", citationIds: [], evidenceExcerptIds: [] }, audit: { id: "audit-2", status: "passed", blockers: [], warnings: [] } });
     const conversation = createConversation({ title: "Proposal retry" });
-    const proposal = createResearchJob({ conversationId: conversation.id, prompt: "Generate proposal", kind: "proposal-generation" });
+    const proposal = createResearchJob({ conversationId: conversation.id, prompt: "Generate proposal", kind: "proposal-generation", input: { projectId: project.id } });
 
     await runResearchWorker({ once: true, workerId: "test-worker" });
 
     expect(getResearchJob(proposal.id)).toMatchObject({ status: "completed", input: { completedSections: ["section-1", "section-2"] } });
-    expect(mocks.saveSectionDraft.mock.calls.map(([input]) => input.sectionId)).toEqual(["section-1", "section-2"]);
-    expect(mocks.callProvider).toHaveBeenCalledTimes(3);
+    expect(mocks.generateStructuredSection.mock.calls.map(([input]) => input.sectionId)).toEqual(["section-1", "section-2", "section-2"]);
     expect(listJobEvents(proposal.id).filter((event) => event.type === "stage-retry")).toHaveLength(1);
+  });
+
+  it("rejects legacy proposal jobs that are not project scoped", async () => {
+    const proposal = createResearchJob({ prompt: "Generate proposal", kind: "proposal-generation" });
+    await runResearchWorker({ once: true, workerId: "test-worker" });
+    expect(getResearchJob(proposal.id)).toMatchObject({ status: "failed" });
+    expect(mocks.generateStructuredSection).not.toHaveBeenCalled();
   });
 });

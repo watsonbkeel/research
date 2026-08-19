@@ -158,7 +158,7 @@ function readVersions(): DraftVersion[] {
 export function readManuscript(): Manuscript {
   const stored = readWorkspaceState<unknown>("manuscript");
   const parsed = manuscriptSchema.safeParse(stored);
-  return parsed.success ? parsed.data : defaultManuscript("AI-Assisted Product Descriptions and Seller-Contact Intentions in C2C Second-Hand Marketplaces");
+  return parsed.success ? parsed.data : defaultManuscript("Untitled doctoral research proposal");
 }
 
 export function saveManuscript(input: Manuscript): Manuscript {

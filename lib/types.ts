@@ -10,6 +10,10 @@ export type BibliographicVerificationStatus = "unverified" | "verified" | "parti
 export type FullTextStatus = "unavailable" | "available" | "parsed" | "reviewed" | "parse_failed";
 export type ClaimEvidenceVerificationStatus = "unverified" | "ai_suggested" | "human_verified" | "rejected";
 export type RetractionStatus = "clear" | "corrected" | "retracted" | "unknown";
+export type ResearchMode = "prospective" | "empirical" | "theoretical" | "review";
+export type EvidenceMode = "exploratory" | "formal";
+export type PublicationStatusCheckState = "unchecked" | "checked" | "failed";
+export type PublicationStatus = "clear" | "corrected" | "retracted" | "expression_of_concern" | "unknown";
 
 export type ChecklistStatus = "未开始" | "进行中" | "已满足" | "待确认";
 
@@ -24,7 +28,7 @@ export interface Project {
   secondaryOutcome: string;
   designLanguage: "中文";
   writingLanguage: "English";
-  citationStyle: "APA 7";
+  citationStyle: "APA 7" | "GB/T 7714";
   version: string;
 }
 
@@ -90,6 +94,19 @@ export interface VerificationEvent {
   retractionStatus: RetractionStatus;
   rawResponseHash?: string;
   notes?: string;
+}
+
+export interface PublicationStatusCheckResult {
+  id?: string;
+  projectId?: string;
+  workId?: string;
+  checkState: PublicationStatusCheckState;
+  status: PublicationStatus;
+  checkedAt: string;
+  provider: string;
+  relatedItems: Array<{ relationType: string; doi?: string; title?: string; publishedAt?: string }>;
+  notes?: string;
+  rawResponseHash?: string;
 }
 
 export interface CandidateRecord {
@@ -192,7 +209,95 @@ export interface StructuredSectionDraft {
 export interface AuditIssue { code: string; severity: "blocker" | "warning"; message: string; sectionId?: string; claimId?: string; workId?: string; evidenceExcerptId?: string }
 export interface CitationAuditReport {
   id: string; projectId: string; documentId: string; versionId: string; status: "passed" | "passed_with_warnings" | "blocked";
-  blockers: AuditIssue[]; warnings: AuditIssue[]; checkedAt: string; checkerVersion: string;
+  blockers: AuditIssue[]; warnings: AuditIssue[]; claimCoverageReportId?: string; checkedAt: string; checkerVersion: string;
+}
+
+export type CoverageClassification = "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method" | "definition" | "connective" | "heading" | "unknown";
+export interface ParagraphCoverage {
+  paragraphId: string;
+  sectionId: string;
+  textHash: string;
+  sentences: Array<{ sentenceId: string; text: string; classification: CoverageClassification; claimId?: string; evidenceExcerptIds: string[]; citationWorkIds: string[]; coverageStatus: "covered" | "not_required" | "unsupported" | "unclassified" }>;
+  coverageRatio: number;
+}
+export interface ClaimCoverageReport {
+  id: string;
+  projectId: string;
+  documentId: string;
+  versionId: string;
+  status: "passed" | "passed_with_warnings" | "blocked";
+  paragraphs: ParagraphCoverage[];
+  blockers: AuditIssue[];
+  warnings: AuditIssue[];
+  checkedAt: string;
+  checkerVersion: string;
+}
+
+export interface DocumentVersion {
+  id: string;
+  projectId: string;
+  documentId: string;
+  versionNumber: number;
+  parentVersionId?: string;
+  sections: Array<{ sectionId: string; title: string; content: string; claimIds: string[]; citationIds: string[]; evidenceExcerptIds: string[]; evidenceBundleId?: string; unsupportedStatements: string[]; evidenceGaps: string[]; contentHash: string }>;
+  citationAuditReportId?: string;
+  consistencyReviewReportId?: string;
+  claimCoverageReportId?: string;
+  approvalStatus: "not_reviewed" | "approved" | "changes_requested";
+  createdBy: string;
+  createdAt: string;
+}
+
+export type GenerationAttemptStatus = "generated" | "schema_failed" | "audit_blocked" | "quarantined" | "promoted" | "discarded";
+export interface QuarantinedDraft {
+  id: string;
+  projectId: string;
+  documentId: string;
+  sectionId: string;
+  content: string;
+  structuredDraft: StructuredSectionDraft;
+  coverageReportId?: string;
+  citationAuditReportId?: string;
+  blockers: AuditIssue[];
+  warnings: AuditIssue[];
+  status: "blocked" | "awaiting_revision" | "promoted" | "discarded";
+  createdAt: string;
+}
+
+export interface FormalExportGateResult {
+  allowed: boolean;
+  blockers: Array<{ code: string; message: string; sectionId?: string; claimId?: string; workId?: string }>;
+  warnings: Array<{ code: string; message: string }>;
+  evidenceSummary: { candidateCount: number; verifiedWorkCount: number; citedWorkCount: number; humanVerifiedExcerptCount: number; coveredClaimCount: number; unsupportedClaimCount: number; unknownPublicationStatusCount: number };
+}
+
+export interface ExportAuditManifest {
+  id?: string;
+  projectId: string;
+  documentId: string;
+  versionId: string;
+  exportedAt: string;
+  citationAuditReportId: string;
+  consistencyReviewReportId: string;
+  claimCoverageReportId: string;
+  humanApproval: { status: string; reviewer?: string; reviewedAt?: string };
+  evidenceSummary: { citedWorks: number; bibliographicallyVerifiedWorks: number; publicationStatusCheckedWorks: number; humanVerifiedExcerpts: number; supportedPublishedFacts: number; unsupportedPublishedFacts: number };
+  blockers: number;
+  warnings: number;
+  contentHash: string;
+}
+
+export interface AssistantWorkflowRun {
+  id: string;
+  projectId: string;
+  documentId: string;
+  sectionId?: string;
+  intent: string;
+  state: "planning" | "analyzing_section" | "extracting_claims" | "auditing" | "matching_existing_evidence" | "searching_candidates" | "verifying_metadata" | "awaiting_full_text" | "suggesting_excerpts" | "awaiting_human_verification" | "drafting_revision" | "awaiting_revision_approval" | "applying_revision" | "reauditing" | "completed" | "blocked" | "failed";
+  actions: Array<{ id: string; tool: string; inputSummary: string; outputSummary?: string; status: "pending" | "running" | "completed" | "blocked" | "failed"; createdAt: string; completedAt?: string; error?: string }>;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ConsistencyReviewReport {

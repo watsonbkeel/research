@@ -3,13 +3,19 @@ import { z } from "zod";
 import { defaultManuscript, manuscriptSchema, type DraftVersion, type Manuscript, type ManuscriptSection } from "./manuscript";
 import { getProject, portfolioDatabase } from "./portfolio";
 import { hasCompletedRealAnalysis } from "./results";
+import { createHash } from "node:crypto";
+import type { DocumentVersion, EvidenceMode, ResearchMode } from "./types";
 
-export type DocumentMode = "prospective" | "empirical";
+export type DocumentMode = ResearchMode;
 export type ProjectDocument = {
   id: string;
   projectId: string;
   documentType: "confirmation-proposal" | "journal-article";
   mode: DocumentMode;
+  researchMode: ResearchMode;
+  evidenceMode: EvidenceMode;
+  currentVersionId?: string;
+  currentVersionNumber: number;
   title: string;
   status: string;
   targetVenue: string;
@@ -23,7 +29,24 @@ const parse = <T>(value: unknown, fallback: T): T => { try { return JSON.parse(S
 
 function rowToDocument(row: Record<string, unknown>): ProjectDocument {
   const manuscript = manuscriptSchema.parse(parse(row.contentJson, {}));
-  return { id: String(row.id), projectId: String(row.projectId), documentType: row.documentType as ProjectDocument["documentType"], mode: row.mode as DocumentMode, title: String(row.title), status: String(row.status), targetVenue: String(row.targetVenue), manuscript, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt) };
+  const researchMode = (row.researchMode ?? row.mode ?? "prospective") as ResearchMode;
+  const document: ProjectDocument = { id: String(row.id), projectId: String(row.projectId), documentType: row.documentType as ProjectDocument["documentType"], mode: researchMode, researchMode, evidenceMode: (row.evidenceMode ?? "exploratory") as EvidenceMode, currentVersionId: row.currentVersionId ? String(row.currentVersionId) : undefined, currentVersionNumber: Number(row.currentVersionNumber ?? 0), title: String(row.title), status: String(row.status), targetVenue: String(row.targetVenue), manuscript, createdAt: String(row.createdAt), updatedAt: String(row.updatedAt) };
+  ensureInitialSnapshot(document);
+  return document;
+}
+
+function ensureInitialSnapshot(document: ProjectDocument) {
+  if (document.currentVersionNumber > 0) return;
+  const db = portfolioDatabase(); const existing = db.prepare("SELECT id,version_number AS versionNumber FROM document_snapshots WHERE project_id=? AND document_id=? ORDER BY version_number DESC LIMIT 1").get(document.projectId, document.id) as { id: string; versionNumber: number } | undefined;
+  if (existing) {
+    db.prepare("UPDATE documents SET current_version_id=?,current_version_number=? WHERE project_id=? AND id=?").run(existing.id, existing.versionNumber, document.projectId, document.id);
+    document.currentVersionId = existing.id; document.currentVersionNumber = existing.versionNumber;
+    return;
+  }
+  const createdAt = now(); const snapshot: DocumentVersion = { id: `document-version-${randomUUID()}`, projectId: document.projectId, documentId: document.id, versionNumber: 1, sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, title: section.title, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements.map((item) => item.statement), evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), approvalStatus: "not_reviewed", createdBy: "migration", createdAt };
+  db.prepare("INSERT INTO document_snapshots (id,project_id,document_id,version_number,parent_version_id,payload_json,created_at) VALUES (?,?,?,?,?,?,?)").run(snapshot.id, snapshot.projectId, snapshot.documentId, snapshot.versionNumber, null, JSON.stringify(snapshot), createdAt);
+  db.prepare("UPDATE documents SET current_version_id=?,current_version_number=? WHERE project_id=? AND id=?").run(snapshot.id, 1, document.projectId, document.id);
+  document.currentVersionId = snapshot.id; document.currentVersionNumber = 1;
 }
 
 function makeArticleManuscript(title: string, targetJournal = ""): Manuscript {
@@ -49,10 +72,10 @@ function makeArticleManuscript(title: string, targetJournal = ""): Manuscript {
   };
 }
 
-function insertDocument(projectId: string, manuscript: Manuscript, mode: DocumentMode): ProjectDocument {
+function insertDocument(projectId: string, manuscript: Manuscript, mode: ResearchMode, evidenceMode: EvidenceMode = "formal"): ProjectDocument {
   const timestamp = now();
-  portfolioDatabase().prepare(`INSERT INTO documents (id,project_id,document_type,mode,title,status,target_venue,content_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(manuscript.id, projectId, manuscript.documentType, mode, manuscript.title, manuscript.status, manuscript.targetJournal || manuscript.targetUniversity, JSON.stringify(manuscript), timestamp, timestamp);
+  portfolioDatabase().prepare(`INSERT INTO documents (id,project_id,document_type,mode,research_mode,evidence_mode,title,status,target_venue,content_json,current_version_number,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(manuscript.id, projectId, manuscript.documentType, mode, mode, evidenceMode, manuscript.title, manuscript.status, manuscript.targetJournal || manuscript.targetUniversity, JSON.stringify(manuscript), 0, timestamp, timestamp);
   return getProjectDocument(projectId, manuscript.id)!;
 }
 
@@ -64,17 +87,17 @@ export function ensureProjectProposal(projectId: string) {
   manuscript.id = `proposal-${randomUUID()}`;
   manuscript.title = project.titleEn;
   manuscript.targetUniversity = project.institution;
-  return insertDocument(projectId, manuscript, "prospective");
+  return insertDocument(projectId, manuscript, "prospective", "formal");
 }
 
 export function listProjectDocuments(projectId: string): ProjectDocument[] {
   if (!getProject(projectId)) throw new Error("项目不存在。");
-  return (portfolioDatabase().prepare(`SELECT id,project_id AS projectId,document_type AS documentType,mode,title,status,target_venue AS targetVenue,
+  return (portfolioDatabase().prepare(`SELECT id,project_id AS projectId,document_type AS documentType,mode,research_mode AS researchMode,evidence_mode AS evidenceMode,current_version_id AS currentVersionId,current_version_number AS currentVersionNumber,title,status,target_venue AS targetVenue,
     content_json AS contentJson,created_at AS createdAt,updated_at AS updatedAt FROM documents WHERE project_id=? ORDER BY created_at`).all(projectId) as Array<Record<string, unknown>>).map(rowToDocument);
 }
 
 export function getProjectDocument(projectId: string, documentId: string): ProjectDocument | undefined {
-  const row = portfolioDatabase().prepare(`SELECT id,project_id AS projectId,document_type AS documentType,mode,title,status,target_venue AS targetVenue,
+  const row = portfolioDatabase().prepare(`SELECT id,project_id AS projectId,document_type AS documentType,mode,research_mode AS researchMode,evidence_mode AS evidenceMode,current_version_id AS currentVersionId,current_version_number AS currentVersionNumber,title,status,target_venue AS targetVenue,
     content_json AS contentJson,created_at AS createdAt,updated_at AS updatedAt FROM documents WHERE project_id=? AND id=?`).get(projectId, documentId) as Record<string, unknown> | undefined;
   return row ? rowToDocument(row) : undefined;
 }
@@ -84,12 +107,26 @@ export function createJournalArticle(projectId: string, input: { title: string; 
   return insertDocument(projectId, makeArticleManuscript(input.title, input.targetJournal), "prospective");
 }
 
-export function saveProjectDocument(projectId: string, documentId: string, input: Manuscript) {
-  const current = getProjectDocument(projectId, documentId); if (!current) throw new Error("文档不存在。");
-  const manuscript = manuscriptSchema.parse({ ...input, id: documentId, documentType: current.documentType, updatedAt: now() });
+function updateProjectDocumentContent(projectId: string, documentId: string, input: Manuscript, documentType: ProjectDocument["documentType"]) {
+  const manuscript = manuscriptSchema.parse({ ...input, id: documentId, documentType, updatedAt: now() });
   portfolioDatabase().prepare("UPDATE documents SET title=?,status=?,target_venue=?,content_json=?,updated_at=? WHERE project_id=? AND id=?")
     .run(manuscript.title, manuscript.status, manuscript.targetJournal || manuscript.targetUniversity, JSON.stringify(manuscript), manuscript.updatedAt, projectId, documentId);
-  return getProjectDocument(projectId, documentId)!;
+  return manuscript;
+}
+
+export function saveProjectDocument(projectId: string, documentId: string, input: Manuscript, options: { expectedVersion?: number; editor?: string } = {}) {
+  const current = getProjectDocument(projectId, documentId); if (!current) throw new Error("文档不存在。");
+  const db = portfolioDatabase();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const versionRow = db.prepare("SELECT current_version_number AS versionNumber FROM documents WHERE project_id=? AND id=?").get(projectId, documentId) as { versionNumber: number } | undefined;
+    if (options.expectedVersion !== undefined && Number(versionRow?.versionNumber ?? 0) !== options.expectedVersion) throw new Error("文档版本已变化，请刷新后重试。");
+    updateProjectDocumentContent(projectId, documentId, input, current.documentType);
+    const savedDocument = getProjectDocument(projectId, documentId)!;
+    createDocumentSnapshot(projectId, savedDocument, options.editor ?? "researcher");
+    db.exec("COMMIT");
+    return getProjectDocument(projectId, documentId)!;
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
 
 export function setProjectDocumentMode(projectId: string, documentId: string, mode: DocumentMode) {
@@ -102,7 +139,13 @@ export function setProjectDocumentMode(projectId: string, documentId: string, mo
     }
   }
   document.manuscript.updatedAt = now();
-  portfolioDatabase().prepare("UPDATE documents SET mode=?,content_json=?,updated_at=? WHERE project_id=? AND id=?").run(mode, JSON.stringify(document.manuscript), document.manuscript.updatedAt, projectId, documentId);
+  portfolioDatabase().prepare("UPDATE documents SET mode=?,research_mode=?,content_json=?,updated_at=? WHERE project_id=? AND id=?").run(mode, mode, JSON.stringify(document.manuscript), document.manuscript.updatedAt, projectId, documentId);
+  return getProjectDocument(projectId, documentId)!;
+}
+
+export function setProjectDocumentEvidenceMode(projectId: string, documentId: string, evidenceMode: EvidenceMode) {
+  const document = getProjectDocument(projectId, documentId); if (!document) throw new Error("文档不存在。");
+  portfolioDatabase().prepare("UPDATE documents SET evidence_mode=?,updated_at=? WHERE project_id=? AND id=?").run(evidenceMode, now(), projectId, documentId);
   return getProjectDocument(projectId, documentId)!;
 }
 
@@ -118,12 +161,27 @@ export function assertProspectiveIntegrity(section: Pick<ManuscriptSection, "tit
   if (violation) throw new Error("预测稿不得包含已完成研究语气、样本事实或统计结果；请改写为预期方向和条件式解释。");
 }
 
-export function saveProjectSection(input: { projectId: string; documentId: string; sectionId: string; content: string; changeSummary: string; editor: string; generatedBy?: string; citationIds?: string[]; claimIds?: string[]; evidenceExcerptIds?: string[]; evidenceBundleId?: string; unsupportedStatements?: Array<{ statement: string; reason: string }>; evidenceGaps?: string[] }) {
+function contentHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
+
+function createDocumentSnapshot(projectId: string, document: ProjectDocument, createdBy: string): DocumentVersion {
+  const db = portfolioDatabase();
+  const current = db.prepare(`SELECT d.current_version_id AS currentVersionId,COALESCE(MAX(s.version_number),0) AS versionNumber
+    FROM documents d LEFT JOIN document_snapshots s ON s.project_id=d.project_id AND s.document_id=d.id
+    WHERE d.project_id=? AND d.id=? GROUP BY d.current_version_id`).get(projectId, document.id) as { versionNumber?: number; currentVersionId?: string } | undefined;
+  const versionNumber = Number(current?.versionNumber ?? 0) + 1;
+  const snapshot: DocumentVersion = { id: `document-version-${randomUUID()}`, projectId, documentId: document.id, versionNumber, parentVersionId: current?.currentVersionId, sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, title: section.title, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements.map((item) => item.statement), evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), approvalStatus: "not_reviewed", createdBy, createdAt: now() };
+  db.prepare("INSERT INTO document_snapshots (id,project_id,document_id,version_number,parent_version_id,payload_json,created_at) VALUES (?,?,?,?,?,?,?)").run(snapshot.id, projectId, document.id, snapshot.versionNumber, snapshot.parentVersionId ?? null, JSON.stringify(snapshot), snapshot.createdAt);
+  db.prepare("UPDATE documents SET current_version_id=?,current_version_number=? WHERE project_id=? AND id=?").run(snapshot.id, snapshot.versionNumber, projectId, document.id);
+  return snapshot;
+}
+
+export function saveProjectSection(input: { projectId: string; documentId: string; sectionId: string; content: string; changeSummary: string; editor: string; generatedBy?: string; citationIds?: string[]; claimIds?: string[]; evidenceExcerptIds?: string[]; evidenceBundleId?: string; unsupportedStatements?: Array<{ statement: string; reason: string }>; evidenceGaps?: string[]; expectedVersion?: number }) {
   const document = getProjectDocument(input.projectId, input.documentId); if (!document) throw new Error("文档不存在。");
   const manuscript = document.manuscript;
   const section = manuscript.chapters.flatMap((chapter) => chapter.sections).find((candidate) => candidate.id === input.sectionId);
   if (!section) throw new Error("章节不存在。");
   if (section.locked) throw new Error("该章节已锁定。");
+  if (input.expectedVersion !== undefined && input.expectedVersion !== document.currentVersionNumber) throw new Error("文档版本已变化，请刷新后重试。");
   const candidate = { ...section, content: input.content };
   if (document.mode === "prospective") assertProspectiveIntegrity(candidate);
   const count = portfolioDatabase().prepare("SELECT COUNT(*) AS count FROM document_versions WHERE document_id=? AND section_id=?").get(input.documentId, input.sectionId) as { count: number };
@@ -136,9 +194,16 @@ export function saveProjectSection(input: { projectId: string; documentId: strin
   section.content = input.content; section.citationIds = input.citationIds ?? section.citationIds; section.claimIds = input.claimIds ?? section.claimIds; section.evidenceExcerptIds = input.evidenceExcerptIds ?? section.evidenceExcerptIds; section.evidenceBundleId = input.evidenceBundleId ?? section.evidenceBundleId; section.unsupportedStatements = input.unsupportedStatements ?? section.unsupportedStatements; section.evidenceGaps = input.evidenceGaps ?? section.evidenceGaps; section.updatedAt = timestamp; section.generatedBy = input.generatedBy; section.generatedAt = input.generatedBy ? timestamp : section.generatedAt;
   section.humanEditStatus = input.generatedBy ? "ai-generated" : "human-edited";
   manuscript.updatedAt = timestamp; manuscript.version = `v0.${Math.max(1, count.count + 1)}`;
-  portfolioDatabase().prepare("INSERT INTO document_versions VALUES (?,?,?,?,?,?)").run(version.id, input.documentId, section.id, version.versionNumber, JSON.stringify(version), timestamp);
-  saveProjectDocument(input.projectId, input.documentId, manuscript);
-  return { document: getProjectDocument(input.projectId, input.documentId)!, version };
+  const db = portfolioDatabase();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("INSERT INTO document_versions VALUES (?,?,?,?,?,?)").run(version.id, input.documentId, section.id, version.versionNumber, JSON.stringify(version), timestamp);
+    updateProjectDocumentContent(input.projectId, input.documentId, manuscript, document.documentType);
+    const savedDocument = getProjectDocument(input.projectId, input.documentId)!;
+    const globalVersion = createDocumentSnapshot(input.projectId, savedDocument, input.editor);
+    db.exec("COMMIT");
+    return { document: getProjectDocument(input.projectId, input.documentId)!, version, documentVersion: globalVersion };
+  } catch (error) { db.exec("ROLLBACK"); throw error; }
 }
 
 export function listProjectDocumentVersions(projectId: string, documentId: string, sectionId?: string) {
@@ -149,7 +214,33 @@ export function listProjectDocumentVersions(projectId: string, documentId: strin
   return (rows as Array<{ payload: string }>).map((row) => z.object({}).passthrough().parse(parse(row.payload, {})) as DraftVersion);
 }
 
+export function listDocumentVersions(projectId: string, documentId: string): DocumentVersion[] {
+  if (!getProjectDocument(projectId, documentId)) throw new Error("文档不存在。");
+  return (portfolioDatabase().prepare("SELECT payload_json AS payload FROM document_snapshots WHERE project_id=? AND document_id=? ORDER BY version_number DESC").all(projectId, documentId) as Array<{ payload: string }>).map((row) => parse<DocumentVersion>(row.payload, {} as DocumentVersion));
+}
+
+export function getDocumentVersion(projectId: string, documentId: string, versionId: string) {
+  return listDocumentVersions(projectId, documentId).find((version) => version.id === versionId);
+}
+
 export function restoreProjectDocumentVersion(projectId: string, documentId: string, versionId: string) {
+  const snapshot = getDocumentVersion(projectId, documentId, versionId);
+  if (snapshot) {
+    const document = getProjectDocument(projectId, documentId); if (!document) throw new Error("文档不存在。");
+    for (const sectionSnapshot of snapshot.sections) {
+      const section = document.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => item.id === sectionSnapshot.sectionId);
+      if (section) { section.content = sectionSnapshot.content; section.claimIds = sectionSnapshot.claimIds; section.citationIds = sectionSnapshot.citationIds; section.evidenceExcerptIds = sectionSnapshot.evidenceExcerptIds; section.evidenceBundleId = sectionSnapshot.evidenceBundleId; section.evidenceGaps = sectionSnapshot.evidenceGaps; section.unsupportedStatements = sectionSnapshot.unsupportedStatements.map((statement) => ({ statement, reason: "restored from immutable document version" })); }
+    }
+    document.manuscript.updatedAt = now();
+    const db = portfolioDatabase(); db.exec("BEGIN IMMEDIATE");
+    try {
+      updateProjectDocumentContent(projectId, documentId, document.manuscript, document.documentType);
+      const restored = getProjectDocument(projectId, documentId)!;
+      const next = createDocumentSnapshot(projectId, restored, "researcher");
+      db.exec("COMMIT");
+      return { document: getProjectDocument(projectId, documentId)!, documentVersion: next };
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
   const row = portfolioDatabase().prepare("SELECT payload_json AS payload FROM document_versions WHERE id=? AND document_id=?").get(versionId, documentId) as { payload: string } | undefined;
   if (!row) throw new Error("DraftVersion不存在。");
   const version = parse<DraftVersion>(row.payload, undefined as unknown as DraftVersion);

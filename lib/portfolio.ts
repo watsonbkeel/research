@@ -122,11 +122,6 @@ function migrateLegacyData() {
   const project = workspace.project;
   const timestamp = now();
   const policy = defaultPolicy(project);
-  if (project.id === "project-ai-c2c") {
-    policy.lockedDesignStatements = workspace.experiments.map((experiment) => `${experiment.name}: ${experiment.design}; ${experiment.primaryTest}`);
-    policy.outcomeInterpretation = `${project.primaryOutcome} and ${project.secondaryOutcome} are intention proxies, not actual transactions or sales conversion.`;
-    policy.forbiddenClaims.push("seller-contact intention described as actual conversion");
-  }
   db().prepare(`INSERT INTO projects (id,slug,title_en,title_zh,field,context,institution,primary_outcome,secondary_outcome,version,status,source_candidate_id,policy_json,created_at,updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(project.id, slugify(project.titleEn), project.titleEn, project.titleZh, project.field, project.context, project.institution, project.primaryOutcome, project.secondaryOutcome, project.version, "active", null, json(policy), timestamp, timestamp);
   db().prepare("INSERT INTO project_state (project_id,key,schema_version,value,updated_at) VALUES (?,?,?,?,?)")
@@ -191,17 +186,27 @@ export function ensurePortfolioSchema() {
       overlap_warning TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS documents (
-      id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_type TEXT NOT NULL,mode TEXT NOT NULL,
-      title TEXT NOT NULL,status TEXT NOT NULL,target_venue TEXT NOT NULL,content_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+      id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_type TEXT NOT NULL,mode TEXT NOT NULL,research_mode TEXT,evidence_mode TEXT,
+      title TEXT NOT NULL,status TEXT NOT NULL,target_venue TEXT NOT NULL,content_json TEXT NOT NULL,current_version_id TEXT,current_version_number INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS documents_project ON documents(project_id,updated_at);
     CREATE TABLE IF NOT EXISTS document_versions (
       id TEXT PRIMARY KEY,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,section_id TEXT NOT NULL,version_number INTEGER NOT NULL,
       payload_json TEXT NOT NULL,created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS document_snapshots (
+      id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      version_number INTEGER NOT NULL,parent_version_id TEXT,payload_json TEXT NOT NULL,created_at TEXT NOT NULL,
+      UNIQUE(project_id,document_id,version_number)
+    );
   `);
   addColumnIfMissing("generation_audit", "project_id", "TEXT");
   addColumnIfMissing("generation_audit", "document_id", "TEXT");
+  addColumnIfMissing("documents", "research_mode", "TEXT");
+  addColumnIfMissing("documents", "evidence_mode", "TEXT");
+  addColumnIfMissing("documents", "current_version_id", "TEXT");
+  addColumnIfMissing("documents", "current_version_number", "INTEGER NOT NULL DEFAULT 0");
+  db().prepare("UPDATE documents SET research_mode=COALESCE(research_mode,mode),evidence_mode=COALESCE(evidence_mode,'exploratory'),current_version_number=COALESCE(current_version_number,0)").run();
   migrateLegacyData();
   db().prepare("INSERT OR IGNORE INTO schema_migrations (id,applied_at) VALUES (?,?)").run("portfolio-v1", now());
 }

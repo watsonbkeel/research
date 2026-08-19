@@ -4,21 +4,44 @@ import { buildSectionEvidenceBundle, bundlePrompt } from "./evidence-bundle";
 import { parseStructuredSectionDraft, draftCitationIds, draftEvidenceIds, draftMarkdown } from "./structured-draft";
 import { saveProjectSection, getProjectDocument } from "./project-documents";
 import { runCitationAudit } from "./citation-audit";
+import { saveQuarantinedDraft } from "./evidence-store";
+import type { ProjectDocument } from "./project-documents";
 
-export async function generateStructuredSection(input: { projectId: string; documentId: string; sectionId: string; profileId?: string; editor?: string; signal?: AbortSignal }) {
+function candidateDocument(document: ProjectDocument, sectionId: string, content: string, draft: ReturnType<typeof parseStructuredSectionDraft>) {
+  const candidate = structuredClone(document);
+  const section = candidate.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => item.id === sectionId);
+  if (!section) throw new Error("章节不存在。");
+  section.content = content;
+  section.citationIds = draftCitationIds(draft);
+  section.claimIds = draft.paragraphs.flatMap((paragraph) => paragraph.claims.map((claim) => claim.claimId));
+  section.evidenceExcerptIds = draftEvidenceIds(draft);
+  section.unsupportedStatements = draft.unsupportedStatements;
+  section.evidenceGaps = draft.evidenceGaps;
+  return candidate;
+}
+
+export async function generateStructuredSection(input: { projectId: string; documentId: string; sectionId: string; profileId?: string; editor?: string; guidance?: string; signal?: AbortSignal }) {
   const document = getProjectDocument(input.projectId, input.documentId); if (!document) throw new Error("文档不存在。"); const section = document.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => item.id === input.sectionId); if (!section) throw new Error("章节不存在。");
   const [settings, workspace, bundleResult] = await Promise.all([readPrivateSettings(), readWorkspace(input.projectId), buildSectionEvidenceBundle({ projectId: input.projectId, documentId: input.documentId, sectionId: input.sectionId })]);
   const bundle = bundleResult.bundle; if (bundle.mode === "formal" && bundle.unresolvedClaims.length) throw new Error("正式章节存在未解决的论断证据，已阻断生成。");
-  const prompt = `Return JSON only matching this schema: {"projectId":string,"documentId":string,"sectionId":string,"paragraphs":[{"markdown":string,"claims":[{"claimId":string,"claimText":string,"kind":"published_fact|researcher_inference|planned_hypothesis|planned_method","evidenceExcerptIds":string[],"citationWorkIds":string[]}]}],"unsupportedStatements":[{"statement":string,"reason":string}],"assumptions":string[],"evidenceGaps":string[]}. Write one English section for ${document.documentType}: ${section.number} ${section.title}. Mode=${bundle.mode}. Do not invent authors, years, DOI, findings, samples or references. Use only claims and evidence in the bundle. Citation tokens must be [[CITE:work-id]] and only use work IDs present in evidence. Planned content must use future-oriented language.\n${bundlePrompt(bundle, { allowFullText: settings.allowFullText })}\nProject title: ${workspace.project.titleEn}`;
+  const guidance = input.guidance?.trim().slice(0, 40_000);
+  const prompt = `Return JSON only matching this schema: {"projectId":string,"documentId":string,"sectionId":string,"paragraphs":[{"markdown":string,"claims":[{"claimId":string,"claimText":string,"kind":"published_fact|researcher_inference|planned_hypothesis|planned_method","evidenceExcerptIds":string[],"citationWorkIds":string[]}]}],"unsupportedStatements":[{"statement":string,"reason":string}],"assumptions":string[],"evidenceGaps":string[]}. Write one English section for ${document.documentType}: ${section.number} ${section.title}. Mode=${bundle.mode}. Do not invent authors, years, DOI, findings, samples or references. Use only claims and evidence in the bundle. Citation tokens must be [[CITE:work-id]] and only use work IDs present in evidence. Planned content must use future-oriented language.\n${bundlePrompt(bundle, { allowFullText: settings.allowFullText })}\nProject title: ${workspace.project.titleEn}${guidance ? `\nProject-specific drafting brief (planning context only, not verified evidence):\n${guidance}` : ""}`;
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const result = await callOpenAICompatible({ settings, taskType: "english_academic_writing", explicitProfileId: input.profileId, prompt: attempt ? `${prompt}\nPrevious response failed schema validation. Return corrected JSON only.` : prompt, systemPrompt: "You are a cautious doctoral evidence agent. Output structured JSON only.", temperature: 0.1, signal: input.signal });
       await recordGenerationAttempts("english_academic_writing", result.attempts, { projectId: input.projectId, documentId: input.documentId });
       const draft = parseStructuredSectionDraft(result.content, bundle, workspace.works);
-      const content = draftMarkdown(draft); const saved = saveProjectSection({ projectId: input.projectId, documentId: input.documentId, sectionId: input.sectionId, content, changeSummary: bundle.mode === "formal" ? "Structured evidence-bounded draft" : "Exploratory structured draft; human verification required", editor: input.editor ?? "researcher", generatedBy: `${result.profile.provider}/${result.profile.model}`, citationIds: draftCitationIds(draft), claimIds: draft.paragraphs.flatMap((paragraph) => paragraph.claims.map((claim) => claim.claimId)), evidenceExcerptIds: draftEvidenceIds(draft), evidenceBundleId: bundle.id, unsupportedStatements: draft.unsupportedStatements, evidenceGaps: draft.evidenceGaps });
+      const content = draftMarkdown(draft);
+      const preflightDocument = candidateDocument(document, input.sectionId, content, draft);
+      const preflight = await runCitationAudit({ projectId: input.projectId, documentId: input.documentId, versionId: `preflight-${bundle.id}`, formal: bundle.mode === "formal", documentOverride: preflightDocument });
+      if (preflight.blockers.length) {
+        const quarantined = saveQuarantinedDraft({ projectId: input.projectId, documentId: input.documentId, sectionId: input.sectionId, content, structuredDraft: draft, coverageReportId: preflight.claimCoverageReportId, citationAuditReportId: preflight.id, blockers: preflight.blockers, warnings: preflight.warnings, status: "blocked" });
+        return { status: "quarantined" as const, quarantined, draft, audit: preflight, attempts: result.attempts, profile: result.profile };
+      }
+      const saved = saveProjectSection({ projectId: input.projectId, documentId: input.documentId, sectionId: input.sectionId, content, changeSummary: bundle.mode === "formal" ? "Structured evidence-bounded draft" : "Exploratory structured draft; human verification required", editor: input.editor ?? "researcher", generatedBy: `${result.profile.provider}/${result.profile.model}`, citationIds: draftCitationIds(draft), claimIds: draft.paragraphs.flatMap((paragraph) => paragraph.claims.map((claim) => claim.claimId)), evidenceExcerptIds: draftEvidenceIds(draft), evidenceBundleId: bundle.id, unsupportedStatements: draft.unsupportedStatements, evidenceGaps: draft.evidenceGaps });
       const audit = await runCitationAudit({ projectId: input.projectId, documentId: input.documentId, versionId: saved.version.id, formal: bundle.mode === "formal" });
-      return { ...saved, draft, audit, attempts: result.attempts, profile: result.profile };
+      return { status: "promoted" as const, ...saved, draft, audit, attempts: result.attempts, profile: result.profile };
     } catch (error) { lastError = error; if (error instanceof ProviderCallError) throw error; }
   }
   throw lastError instanceof Error ? lastError : new Error("结构化稿件生成失败。");

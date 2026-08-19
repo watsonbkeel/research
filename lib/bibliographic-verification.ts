@@ -56,8 +56,8 @@ export async function verifyCandidateBibliography(input: { projectId: string; ca
   const core = [matchedFields.doi, matchedFields.title, matchedFields.authors, matchedFields.year];
   const result: VerificationEvent["result"] = core.every(Boolean) && (!candidate.venue || matchedFields.venue) ? "verified" : matchedFields.doi && core.filter(Boolean).length >= 3 ? "partial_match" : "mismatch";
   const retractionStatus: VerificationEvent["retractionStatus"] = message.subtype === "retraction" || message["update-to"] ? "unknown" : "unknown";
-  const event = saveVerificationEvent({ projectId: input.projectId, candidateId: candidate.id, provider: "crossref", inputIdentifier: candidate.doi, matchedFields, result, retractionStatus, rawResponseHash: responseHash(payload), notes: result === "verified" ? "Crossref exact DOI metadata matched all required fields." : "Metadata requires human review; no Work was promoted." });
-  if (result !== "verified") { updateCandidateStatus(input.projectId, candidate.id, "discovered"); return { event }; }
+  const eventInput = { projectId: input.projectId, candidateId: candidate.id, provider: "crossref" as const, inputIdentifier: candidate.doi, matchedFields, result, retractionStatus, rawResponseHash: responseHash(payload), notes: result === "verified" ? "Crossref exact DOI metadata matched all required fields." : "Metadata requires human review; no Work was promoted." };
+  if (result !== "verified") { const event = saveVerificationEvent(eventInput); updateCandidateStatus(input.projectId, candidate.id, "discovered"); return { event }; }
   const promotedMetadata = { title: message.title?.[0] ?? candidate.title, authors: remoteAuthors.join("; ") || candidate.authors.join("; "), year: remoteYear ?? candidate.year ?? 0, venue: message["container-title"]?.[0] ?? candidate.venue ?? "", doi: doi(message.DOI), relevance: "Promoted from a bibliographically verified CandidateRecord." };
   let workspace = await readWorkspace(input.projectId);
   let work = workspace.works.find((item) => doi(item.doi) === doi(candidate.doi) || normalizeBibliographicText(item.title) === normalizeBibliographicText(candidate.title));
@@ -73,8 +73,7 @@ export async function verifyCandidateBibliography(input: { projectId: string; ca
     registerProjectWork(input.projectId, work);
   }
   if (!work) throw new Error("核验成功但 Work 创建失败。");
-  const workEvent = { ...event, workId: work.id };
-  updateWorkVerification(input.projectId, work.id, workEvent);
+  const workEvent = updateWorkVerification(input.projectId, work.id, { ...eventInput, id: `verification-${createHash("sha256").update(`${input.projectId}|${candidate.id}|${Date.now()}`).digest("hex").slice(0, 20)}`, checkedAt: new Date().toISOString(), workId: work.id });
   work.bibliographicStatus = workEvent.result;
   work.retractionStatus = workEvent.retractionStatus;
   updateCandidateStatus(input.projectId, candidate.id, "promoted");

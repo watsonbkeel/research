@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { addMessage, conversationMessageInputSchema, createProposalGenerationJob, createResearchJob, getConversation, getResearchJob, listArtifacts, listMessages, listResearchJobs, messageInputSchema, transitionJob } from "@/lib/assistant";
 import { planAssistantIntent, requestsProposalGeneration } from "@/lib/assistant-intent";
 import { getProjectSnapshot, getCurrentDocument, getQualityBlockers } from "@/lib/assistant-tools";
+import { startAssistantWorkflow } from "@/lib/assistant-workflow";
 export const runtime = "nodejs";
 type Context = { params: Promise<{ conversationId: string }> };
 export async function GET(_request: Request, context: Context) { const { conversationId } = await context.params; if (!getConversation(conversationId)) return NextResponse.json({ error: "Conversation not found" }, { status: 404 }); return NextResponse.json({ messages: listMessages(conversationId) }); }
@@ -30,6 +31,9 @@ export async function POST(request: Request, context: Context) {
       content: orchestration.data.content,
       metadata: selectedProfileId ? { profileId: selectedProfileId } : undefined,
     });
+    const workflow = plan.intent === "section_revision" && plan.projectId && plan.documentId
+      ? startAssistantWorkflow({ projectId: plan.projectId, documentId: plan.documentId, sectionId: plan.sectionId, intent: plan.intent, idempotencyKey: `${conversationId}:${plan.documentId}:${plan.sectionId ?? "document"}:${orchestration.data.content.slice(0, 120)}` })
+      : undefined;
     if (waitingJob && directProposalRequest && previousHasFeasibility) {
       const job = createProposalGenerationJob(waitingJob.id, orchestration.data.content);
       addMessage(conversationId, { role: "assistant", content: "收到。已有可行性报告足以进入写作，我会按当前最佳方案直接生成英文 Confirmation Proposal；剩余非阻断性问题将作为工作假设或待核验项标注，不再重复追问。", metadata: { jobId: job.id, stage: "proposal-outline" } });
@@ -48,12 +52,12 @@ export async function POST(request: Request, context: Context) {
         ...(plan.projectId ? { projectId: plan.projectId } : {}), ...(plan.documentId ? { documentId: plan.documentId } : {}), ...(plan.sectionId ? { sectionId: plan.sectionId } : {}), assistantPlan: plan,
         ...(selectedProfileId ? { profileId: selectedProfileId } : {}),
         ...(waitingJob ? { previousJobId: waitingJob.id } : {}),
-        ...(directProposalRequest ? { autoGenerateProposal: true } : {}),
+        ...(directProposalRequest ? { autoGenerateProposal: true } : {}), ...(workflow ? { workflowRunId: workflow.id } : {}),
         clarificationRound: waitingJob?.stage === "idea-intake" ? previousClarificationRound + 1 : previousClarificationRound,
         revisionRound: waitingJob?.stage === "feasibility" ? previousRevisionRound + 1 : previousRevisionRound,
       },
     });
-    return NextResponse.json({ message, job }, { status: 202 });
+    return NextResponse.json({ message, job, workflow }, { status: 202 });
   }
   const parsed = messageInputSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message }, { status: 400 });

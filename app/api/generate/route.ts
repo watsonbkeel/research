@@ -100,6 +100,7 @@ export async function POST(request: Request) {
     if (parsed.data.section === "results" && !hasCompletedRealAnalysis(undefined, projectId)) return NextResponse.json({ error: "Results章节已阻断：尚无完成且标记为真实数据的AnalysisRun。请先登记可复现的真实分析运行。" }, { status: 409 });
     try {
       const result = await generateStructuredSection({ projectId, documentId: document.id, sectionId: section.id, profileId: parsed.data.profileId, editor: "researcher" });
+      if (result.status === "quarantined") return NextResponse.json({ ...result, draft: result.quarantined.content, structuredDraft: result.draft }, { status: 409 });
       const savedSection = result.document.manuscript.chapters.flatMap((chapter) => chapter.sections).find((item) => item.id === section.id);
       return NextResponse.json({ ...result, draft: savedSection?.content ?? "", structuredDraft: result.draft });
     } catch (error) {

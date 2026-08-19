@@ -3,21 +3,25 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      WORKBENCH_DATA_DIR: ${{ runner.temp }}/workbench-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Create isolated test data directory
+        run: echo "WORKBENCH_DATA_DIR=$(mktemp -d \"$RUNNER_TEMP/workbench-ci.XXXXXX\")" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run lint
-      - run: npm run build
       - run: npm run typecheck
       - run: npm test -- --run
+      - run: npm run build
+      - name: Clean isolated test data
+        if: always()
+        run: rm -rf -- "$WORKBENCH_DATA_DIR"

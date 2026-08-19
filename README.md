@@ -67,7 +67,7 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 - 句子级 Claim Coverage 会区分已发表事实、研究者推论、计划假设、计划方法、定义和连接文本；正式事实没有 Claim、定位证据和正文 citation token 时会形成 blocker。
 - 生成前执行结构化 Schema、citation token、Claim Coverage 与 CitationAudit 预检查。被阻断的草稿连同 Coverage/CitationAudit 报告 ID 一起隔离保存，当前正文保持不变。
 - 完整稿保存和章节保存都会创建不可变的全局 `DocumentVersion`，记录父版本、章节内容 hash、证据关系和创建者；API 支持 optimistic locking，恢复操作本身也创建新版本。
-- 正式导出统一经过 `FormalExportGate`，同时检查 formal 证据模式、当前版本、Claim Coverage、CitationAudit、一致性审查、人工批准、发表状态、目标机构与必填章节。
+- 正式导出统一经过 `FormalExportGate`，必须显式指定不可变 `versionId`，并检查版本/hash 精确匹配的 Claim Coverage、CitationAudit、一致性审查、独立人工批准、发表状态、目标机构与必填章节。旧全局 manuscript API 返回 410。
 - “稿件中心”提供 Confirmation Proposal 的 17 章英文章节树、字数、研究状态、审阅状态和 DraftVersion 恢复。稿件内容写入 SQLite，不依赖浏览器临时状态。
 - “证据摘录”将短引文或研究者释义绑定到文献、页码/段落和 Claim；受限全文不会发送到外部模型。
 - “假设与分析”保存 Hypothesis、Estimand、模型公式、功效、排除、缺失和稳健性计划，并生成 Study Matrix。空链或断链显示为质量阻断。
@@ -120,10 +120,12 @@ worker 启动器会以与 Next.js 相同的方式加载 `.env.local`（若文件
 
 Work 的 `bibliographicStatus`、全文 `FullTextAsset.status` 和摘录 `verificationStatus` 是三套独立状态。旧的“DOI已核对”不会被当作新 `verified`；没有真实核验事件的旧记录会标记为 `unverified` 并要求重新核验。EvidenceExcerpt 必须绑定页码或定位；`human_verified` 必须有研究者和 `reviewedAt`（旧 `reviewDate` 仅兼容）。上传 PDF 只接受用户提供的本地文件，保存在 `.local/projects/<projectId>/full-text`，按页解析并支持项目内全文搜索，默认禁止发送给外部模型。
 
-章节生成统一经过 `SectionEvidenceBundle` 和结构化 JSON Schema。模型只能返回当前证据包中的 Work/EvidenceExcerpt ID，正文使用 `[[CITE:work-id]]` 占位符；程序验证后由 `CitationService` 生成 APA 7 或 GB/T 7714 正文引用和参考文献。Candidate、未核验 Work、跨项目证据、未定位引文、撤稿来源和未支持论断都会被 `CitationAudit` 记录或阻断。`ConsistencyReview` 另行检查研究问题、理论、假设、Study、估计量和结果语气；自动通过不等于人工批准。
+章节生成统一经过 `SectionEvidenceBundle` 和结构化 JSON Schema。模型只能返回当前证据包中的 Work/EvidenceExcerpt ID，正文使用 `[[CITE:work-id]]` 占位符；程序验证后由 citeproc-js 生成 APA 7 或 GB/T 7714-2015 numeric 正文引用和参考文献。Candidate、未核验 Work、跨项目证据、未定位引文、撤稿来源、孤立 citation 和错误 Claim-Evidence-Work-Citation Binding 都会被 `CitationAudit` 记录或阻断。`ConsistencyReview` 另行检查研究问题、理论、假设、Study、估计量和结果语气；自动通过不等于人工批准。
+
+章节引用修复助手使用持久化 `AssistantWorkflowRun`。worker 会实际运行 Coverage、CitationAudit、现有证据匹配、候选检索、书目核验和本地全文检索；没有全文时停在 `awaiting_full_text`，AI 摘录停在 `awaiting_human_verification`，修订 diff 停在 `awaiting_revision_approval`。只有人工应用 diff 后才创建新 DocumentVersion 并重新审查。
 
 项目文档 API 和旧的 `/api/generate`、`/api/manuscript/generate` 入口都转入同一结构化生成服务。项目助手支持问答、候选检索、书目核验、本地全文搜索、证据摘录建议、未支持论断、引用审查、一致性审查、章节草稿和章节修订。只读请求可在长任务运行时继续执行；修改请求先生成持久化 diff，只有明确应用后才创建新的 DraftVersion。
 
 项目文档导出必须显式绑定 project/document。默认导出是带审查计数的草稿版；`?formal=1` 会运行统一 FormalExportGate，有 blocker 时返回 409，不生成正式文件。Markdown、DOCX、BibTeX 和 ZIP 的正文引用与参考文献都来自实际 `citationIds`，不会泄漏 `[[CITE:...]]`、API Key 或受限全文。
 
-数据库迁移 ID 为 `evidence-closure-v2`。首次迁移先执行 WAL FULL checkpoint，再创建 `.pre-evidence-closure-v2.sqlite` 备份并记录 SHA-256、迁移前后计数和 `PRAGMA integrity_check` 结果；数据库事务失败会自动 rollback，备份文件的灾难恢复目前需要研究者或管理员手工执行。重复启动通过 `schema_migrations` 幂等跳过已完成迁移。
+数据库迁移 ID 为 `evidence-closure-v2`。首次迁移先执行 WAL FULL checkpoint，再通过 SQLite `VACUUM INTO` 创建专用备份并记录 SHA-256、迁移前后计数和 `PRAGMA integrity_check` 结果；数据库事务失败会 rollback、关闭连接、从已验证备份自动恢复、重新打开并再次执行完整性检查。重复启动通过 `schema_migrations` 幂等跳过已完成迁移。

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createProject, portfolioDatabaseForTests } from "@/lib/portfolio";
 import { ensureProjectProposal, getProjectDocument, listDocumentVersions, saveProjectDocument, saveProjectSection, setProjectDocumentEvidenceMode } from "@/lib/project-documents";
-import { compileClaimCoverage } from "@/lib/claim-coverage";
+import { compileClaimCoverage, deterministicClaimCoverageClassifier } from "@/lib/claim-coverage";
 import { checkFormalExportGate } from "@/lib/formal-export-gate";
 import { saveCandidateRecord, listVerificationEvents, latestPublicationStatusCheck, listQuarantinedDrafts, saveQuarantinedDraft } from "@/lib/evidence-store";
 import { verifyCandidateBibliography } from "@/lib/bibliographic-verification";
@@ -36,13 +36,13 @@ describe("P0 production readiness", () => {
     const { project, document } = fixture(); const section = document.manuscript.chapters[0].sections[0];
     section.content = "Published research demonstrates a substantial effect on the outcome."; section.claimIds = [];
     saveProjectDocument(project.id, document.id, document.manuscript);
-    const coverage = await compileClaimCoverage({ projectId: project.id, documentId: document.id });
+    const coverage = await compileClaimCoverage({ projectId: project.id, documentId: document.id, classifier: deterministicClaimCoverageClassifier });
     expect(coverage.status).toBe("blocked"); expect(coverage.blockers.some((issue) => issue.code === "uncovered-published-fact")).toBe(true);
   });
 
   it("does not require citations for connective text", async () => {
     const { project, document } = fixture(); const section = document.manuscript.chapters[0].sections[0]; section.content = "However, the next section proceeds in three steps."; saveProjectDocument(project.id, document.id, document.manuscript);
-    const coverage = await compileClaimCoverage({ projectId: project.id, documentId: document.id });
+    const coverage = await compileClaimCoverage({ projectId: project.id, documentId: document.id, classifier: deterministicClaimCoverageClassifier });
     expect(coverage.paragraphs[0].sentences[0].coverageStatus).toBe("not_required");
   });
 
@@ -98,7 +98,7 @@ describe("P0 production readiness", () => {
   it("renders real APA and GB/T outputs without leaking tokens", () => {
     const work: Work = { id: "work-zh", authors: "王明", year: 2024, title: "虚构研究", venue: "测试学报", sourceType: "journal-article", volume: "2", issue: "1", pages: "10-20", doi: "10.1000/zh", group: "相邻研究", status: "未核验", bibliographicStatus: "verified", relevance: "" };
     const apa = referencesFor([work], [work.id], "apa")[0].text; const gb = referencesFor([work], [work.id], "gb7714")[0].text;
-    expect(apa).not.toBe(gb); expect(gb).toContain("[J]"); expect(renderCitationTokens(`Fact [[CITE:${work.id}]]`, [work], [work.id], "gb7714").content).not.toContain("[[CITE:");
+    expect(apa).not.toBe(gb); expect(gb).toMatch(/\[J(?:\/OL)?\]/); expect(renderCitationTokens(`Fact [[CITE:${work.id}]]`, [work], [work.id], "gb7714").content).not.toContain("[[CITE:");
   });
 
   it("blocks blank or exploratory documents at the unified formal export gate", async () => {

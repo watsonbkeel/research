@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject } from "@/lib/portfolio";
-import { getProjectDocument } from "@/lib/project-documents";
+import { getProjectDocument, documentForVersion } from "@/lib/project-documents";
 import { exportProjectDocumentMarkdown, safeFileSlug } from "@/lib/project-document-exporter";
 import { readWorkspace } from "@/lib/storage";
 import { runCitationAudit } from "@/lib/citation-audit";
@@ -20,12 +20,13 @@ export async function GET(request: Request) {
   if (!project || !document) return NextResponse.json({ error: "项目或文档不存在。" }, { status: 404 });
   const gate = formal ? await checkFormalExportGate({ projectId, documentId, versionId }) : undefined;
   if (gate && !gate.allowed) return NextResponse.json({ error: "正式导出质量门阻断。", gate }, { status: 409 });
-  const audit = formal ? undefined : await runCitationAudit({ projectId, documentId, versionId, formal: false });
-  const body = exportProjectDocumentMarkdown(project, document, await readWorkspace(projectId), audit);
+  const exportDocument = versionId ? documentForVersion(document, versionId) : document; if (!exportDocument) return NextResponse.json({ error: "指定版本不存在。" }, { status: 404 });
+  const audit = formal ? undefined : await runCitationAudit({ projectId, documentId, versionId, formal: false, documentOverride: exportDocument });
+  const body = exportProjectDocumentMarkdown(project, exportDocument, await readWorkspace(projectId), audit);
   return new Response(body, {
     headers: {
       "content-type": "text/markdown; charset=utf-8",
-      "content-disposition": `attachment; filename="${safeFileSlug(document.title)}.md"`,
+      "content-disposition": `attachment; filename="${safeFileSlug(exportDocument.title)}.md"`,
     },
   });
 }

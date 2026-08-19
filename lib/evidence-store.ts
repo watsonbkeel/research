@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { portfolioDatabase, readProjectState, writeProjectState } from "./portfolio";
-import type { CandidateRecord, ConsistencyReviewReport, CitationAuditReport, VerificationEvent, Work, QuarantinedDraft } from "./types";
+import type { CandidateRecord, ConsistencyReviewReport, CitationAuditReport, VerificationEvent, Work, QuarantinedDraft, ClaimEvidenceCitationBinding, HumanApproval, PublicationStatusOverride } from "./types";
 import { runMigration } from "./migration-service";
 
 const MIGRATION_ID = "evidence-closure-v2";
@@ -83,6 +83,10 @@ export function ensureEvidenceSchema() {
     CREATE TABLE IF NOT EXISTS export_audit_manifests (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,version_id TEXT NOT NULL,payload_json TEXT NOT NULL,exported_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_workflow_runs (id TEXT PRIMARY KEY,project_id TEXT NOT NULL,document_id TEXT NOT NULL,section_id TEXT,intent TEXT NOT NULL,state TEXT NOT NULL,actions_json TEXT NOT NULL,idempotency_key TEXT,payload_json TEXT NOT NULL,updated_at TEXT NOT NULL,created_at TEXT NOT NULL);
     CREATE UNIQUE INDEX IF NOT EXISTS assistant_workflow_idempotency ON assistant_workflow_runs(project_id,idempotency_key) WHERE idempotency_key IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS claim_evidence_citation_bindings (id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,document_version_id TEXT NOT NULL,section_id TEXT NOT NULL,sentence_id TEXT NOT NULL,claim_id TEXT NOT NULL,evidence_excerpt_id TEXT NOT NULL,work_id TEXT NOT NULL,citation_item_id TEXT NOT NULL,relation TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(document_version_id,sentence_id,claim_id,evidence_excerpt_id,work_id,citation_item_id));
+    CREATE INDEX IF NOT EXISTS claim_binding_version ON claim_evidence_citation_bindings(project_id,document_id,document_version_id);
+    CREATE TABLE IF NOT EXISTS document_approvals (id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,document_version_id TEXT NOT NULL,decision TEXT NOT NULL,reviewer TEXT NOT NULL,reviewed_at TEXT NOT NULL,notes TEXT,UNIQUE(project_id,document_id,document_version_id));
+    CREATE TABLE IF NOT EXISTS publication_status_overrides (id TEXT PRIMARY KEY,project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,work_id TEXT NOT NULL,document_version_id TEXT NOT NULL,reviewer TEXT NOT NULL,reviewed_at TEXT NOT NULL,reason TEXT NOT NULL,decision TEXT NOT NULL,UNIQUE(project_id,work_id,document_version_id));
   `);
   runMigration({ id: MIGRATION_ID, migrate: migrateLegacyRecords });
 }
@@ -141,12 +145,52 @@ export function updateWorkVerification(projectId: string, workId: string, event:
 
 export function saveCitationAudit(report: CitationAuditReport) { ensureEvidenceSchema(); portfolioDatabase().prepare("INSERT OR REPLACE INTO citation_audits VALUES (?,?,?,?,?,?,?)").run(report.id, report.projectId, report.documentId, report.versionId, report.status, JSON.stringify(report), report.checkedAt); return report; }
 export function latestCitationAudit(projectId: string, documentId: string) { ensureEvidenceSchema(); const row = portfolioDatabase().prepare("SELECT payload_json FROM citation_audits WHERE project_id=? AND document_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, documentId) as { payload_json: string } | undefined; return row ? parse<CitationAuditReport>(row.payload_json, undefined as never) : undefined; }
+export function citationAuditForVersion(projectId: string, documentId: string, versionId: string) { ensureEvidenceSchema(); const row = portfolioDatabase().prepare("SELECT payload_json FROM citation_audits WHERE project_id=? AND document_id=? AND version_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, documentId, versionId) as { payload_json: string } | undefined; return row ? parse<CitationAuditReport>(row.payload_json, undefined as never) : undefined; }
 export function saveConsistencyReview(report: ConsistencyReviewReport) { ensureEvidenceSchema(); portfolioDatabase().prepare("INSERT OR REPLACE INTO consistency_reviews VALUES (?,?,?,?,?,?,?,?)").run(report.id, report.projectId, report.documentId, report.versionId, report.status, report.humanApproval, JSON.stringify(report), report.checkedAt); return report; }
 export function latestConsistencyReview(projectId: string, documentId: string) { ensureEvidenceSchema(); const row = portfolioDatabase().prepare("SELECT payload_json FROM consistency_reviews WHERE project_id=? AND document_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, documentId) as { payload_json: string } | undefined; return row ? parse<ConsistencyReviewReport>(row.payload_json, undefined as never) : undefined; }
+export function consistencyReviewForVersion(projectId: string, documentId: string, versionId: string) { ensureEvidenceSchema(); const row = portfolioDatabase().prepare("SELECT payload_json FROM consistency_reviews WHERE project_id=? AND document_id=? AND version_id=? ORDER BY checked_at DESC LIMIT 1").get(projectId, documentId, versionId) as { payload_json: string } | undefined; return row ? parse<ConsistencyReviewReport>(row.payload_json, undefined as never) : undefined; }
 export function updateConsistencyHumanApproval(projectId: string, documentId: string, humanApproval: ConsistencyReviewReport["humanApproval"]) {
   const current = latestConsistencyReview(projectId, documentId);
   if (!current) throw new Error("尚未运行一致性审查。");
   return saveConsistencyReview({ ...current, humanApproval, checkedAt: now() });
+}
+
+export function saveClaimEvidenceCitationBinding(binding: ClaimEvidenceCitationBinding) {
+  ensureEvidenceSchema();
+  portfolioDatabase().prepare("INSERT INTO claim_evidence_citation_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(binding.id, binding.projectId, binding.documentId, binding.documentVersionId, binding.sectionId, binding.sentenceId, binding.claimId, binding.evidenceExcerptId, binding.workId, binding.citationItemId, binding.relation, binding.createdAt);
+  return binding;
+}
+
+export function claimEvidenceCitationBindingsForVersion(projectId: string, documentId: string, documentVersionId: string): ClaimEvidenceCitationBinding[] {
+  ensureEvidenceSchema();
+  const rows = portfolioDatabase().prepare("SELECT id,project_id AS projectId,document_id AS documentId,document_version_id AS documentVersionId,section_id AS sectionId,sentence_id AS sentenceId,claim_id AS claimId,evidence_excerpt_id AS evidenceExcerptId,work_id AS workId,citation_item_id AS citationItemId,relation,created_at AS createdAt FROM claim_evidence_citation_bindings WHERE project_id=? AND document_id=? AND document_version_id=? ORDER BY created_at,id").all(projectId, documentId, documentVersionId) as Array<Record<string, unknown>>;
+  return rows.map((row) => row as unknown as ClaimEvidenceCitationBinding);
+}
+
+export function saveDocumentApproval(input: Omit<HumanApproval, "id" | "reviewedAt"> & Partial<Pick<HumanApproval, "id" | "reviewedAt">>) {
+  ensureEvidenceSchema();
+  const reviewer = input.reviewer.trim(); if (!reviewer) throw new Error("审批 reviewer 不能为空。");
+  const approval: HumanApproval = { ...input, id: input.id ?? `approval-${randomUUID()}`, reviewer, reviewedAt: input.reviewedAt ?? now() };
+  portfolioDatabase().prepare("INSERT INTO document_approvals VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(project_id,document_id,document_version_id) DO UPDATE SET id=excluded.id,decision=excluded.decision,reviewer=excluded.reviewer,reviewed_at=excluded.reviewed_at,notes=excluded.notes").run(approval.id, approval.projectId, approval.documentId, approval.documentVersionId, approval.decision, approval.reviewer, approval.reviewedAt, approval.notes ?? null);
+  return approval;
+}
+
+export function documentApprovalForVersion(projectId: string, documentId: string, documentVersionId: string): HumanApproval | undefined {
+  ensureEvidenceSchema();
+  return portfolioDatabase().prepare("SELECT id,project_id AS projectId,document_id AS documentId,document_version_id AS documentVersionId,decision,reviewer,reviewed_at AS reviewedAt,notes FROM document_approvals WHERE project_id=? AND document_id=? AND document_version_id=?").get(projectId, documentId, documentVersionId) as HumanApproval | undefined;
+}
+
+export function savePublicationStatusOverride(input: Omit<PublicationStatusOverride, "id" | "reviewedAt" | "decision"> & Partial<Pick<PublicationStatusOverride, "id" | "reviewedAt">>) {
+  ensureEvidenceSchema(); const latest = latestPublicationStatusCheck(input.projectId, input.workId);
+  if (!latest || latest.checkState !== "checked" || latest.status !== "unknown") throw new Error("只有 checked + unknown publication status 可以人工确认；撤稿或关注表达不能放行。");
+  const reviewer = input.reviewer.trim(), reason = input.reason.trim(); if (!reviewer || !reason) throw new Error("publication status override 必须包含 reviewer 和 reason。");
+  const override: PublicationStatusOverride = { ...input, id: input.id ?? `publication-override-${randomUUID()}`, reviewer, reason, reviewedAt: input.reviewedAt ?? now(), decision: "allow_unknown_for_this_version" };
+  portfolioDatabase().prepare("INSERT INTO publication_status_overrides VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(project_id,work_id,document_version_id) DO UPDATE SET id=excluded.id,reviewer=excluded.reviewer,reviewed_at=excluded.reviewed_at,reason=excluded.reason,decision=excluded.decision").run(override.id, override.projectId, override.workId, override.documentVersionId, override.reviewer, override.reviewedAt, override.reason, override.decision);
+  return override;
+}
+
+export function publicationStatusOverrideForVersion(projectId: string, workId: string, documentVersionId: string): PublicationStatusOverride | undefined {
+  ensureEvidenceSchema(); return portfolioDatabase().prepare("SELECT id,project_id AS projectId,work_id AS workId,document_version_id AS documentVersionId,reviewer,reviewed_at AS reviewedAt,reason,decision FROM publication_status_overrides WHERE project_id=? AND work_id=? AND document_version_id=?").get(projectId, workId, documentVersionId) as PublicationStatusOverride | undefined;
 }
 
 export function responseHash(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }

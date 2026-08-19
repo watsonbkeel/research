@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getProjectDocument } from "./project-documents";
+import { getProjectDocument, documentForVersion, projectDocumentContentHash } from "./project-documents";
 import { readWorkspace } from "./storage";
 import { readResearchPlan } from "./research-plan";
 import { saveConsistencyReview, latestConsistencyReview } from "./evidence-store";
@@ -12,7 +12,7 @@ function presentNote(value: unknown) {
 }
 
 export async function runConsistencyReview(input: { projectId: string; documentId: string; versionId?: string }) {
-  const document = getProjectDocument(input.projectId, input.documentId); if (!document) throw new Error("文档不存在。");
+  const baseDocument = getProjectDocument(input.projectId, input.documentId); if (!baseDocument) throw new Error("文档不存在。"); const document = input.versionId ? documentForVersion(baseDocument, input.versionId) : baseDocument; if (!document) throw new Error("指定文档版本不存在。");
   const workspace = await readWorkspace(input.projectId); const plan = await readResearchPlan(input.projectId); const issues: ConsistencyReviewReport["issues"] = [];
   const reviewId = `consistency-${randomUUID()}`; const reviewVersionId = input.versionId ?? document.currentVersionId ?? document.manuscript.version; const startedAt = new Date().toISOString();
   saveConsistencyReview({ id: reviewId, projectId: input.projectId, documentId: input.documentId, versionId: reviewVersionId, status: "running", issues: [], humanApproval: "not_reviewed", checkedAt: startedAt, checkerVersion: "consistency-review-v2" });
@@ -42,7 +42,7 @@ export async function runConsistencyReview(input: { projectId: string; documentI
   if (workspace.constructs.some((construct) => construct.sourceWorkIds.some((id) => !workIds.has(id)))) issues.push({ severity: "blocker", sourceSectionId: theory?.id, issue: "构念引用了不存在的量表或理论来源 Work。", recommendation: "修正 sourceWorkIds 并运行书目核验。" });
   if (method && !method.content.trim()) issues.push({ severity: "blocker", sourceSectionId: method.id, issue: "方法章节为空，研究设计链条无法审查。", recommendation: "先写入方法、操作化和分析计划。" });
   const status: ConsistencyReviewReport["status"] = issues.some((item) => item.severity === "blocker") ? "blocked" : issues.length ? "passed_with_warnings" : "passed";
-  const report: ConsistencyReviewReport = { id: reviewId, projectId: input.projectId, documentId: input.documentId, versionId: reviewVersionId, status, issues, humanApproval: "not_reviewed", checkedAt: new Date().toISOString(), checkerVersion: "consistency-review-v2" };
+  const report: ConsistencyReviewReport = { id: reviewId, projectId: input.projectId, documentId: input.documentId, versionId: reviewVersionId, documentVersionId: reviewVersionId, contentHash: projectDocumentContentHash(document), status, issues, humanApproval: "not_reviewed", checkedAt: new Date().toISOString(), checkerVersion: "consistency-review-v3-version-bound" };
   return saveConsistencyReview(report);
 }
 

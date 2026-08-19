@@ -343,3 +343,5 @@ export function promoteTopicCandidate(candidateId: string, overrides: Partial<Pr
 
 export function portfolioDatabase() { ensurePortfolioSchema(); return db(); }
 export const portfolioDatabaseForTests = portfolioDatabase;
+export function portfolioDatabaseFile() { return databasePath(); }
+export function closePortfolioDatabase() { database?.close(); database = undefined; openedPath = ""; }

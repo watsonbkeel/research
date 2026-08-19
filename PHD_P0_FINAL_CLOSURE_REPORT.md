@@ -7,7 +7,7 @@
 - 开始分支：`codex/p0-final-closure-3`
 - 开始 HEAD：`54a4eb1 harden formal evidence workflow and production readiness`
 - 修改后分支：`codex/p0-final-closure-3`
-- 修改后 HEAD：承载本报告的分支最新提交；精确 hash 以 `git rev-parse HEAD` 和该提交的 GitHub Actions run 为准。
+- 实现提交 HEAD：`6e79c2dfb0e33a7eba3623ac0761947e0c2ae0ce`（`close evidence integrity and formal export gaps`）。本报告的定稿会产生一个仅文档的后续提交，分支最终 HEAD 以 `git rev-parse HEAD` 和最终交付说明为准。
 - 修改前基线：lint、typecheck、18 个测试文件/83 个测试、build 均通过。
 
 ## 本轮确认并修复的缺陷
@@ -76,7 +76,7 @@ APA 7 使用 Citation.js/citeproc-js；GB/T 使用仓库内真实 CSL 样式 `ch
 - build：Next.js 15.5.23 production build 通过，35/35 静态页面生成。
 - `git diff --check`：通过。
 - 新增测试文件：`tests/p0-final-closure.test.ts`，14 个针对性回归测试；同时更新既有 P0 测试断言。
-- GitHub Actions：报告创建时尚未推送；推送后以分支最新 run ID、URL 和结论补充到最终交付说明，不在未验证时声称通过。
+- GitHub Actions：实现提交 run `32228079492` 已成功，URL：<https://github.com/watsonbkeel/research/actions/runs/32228079492>。报告定稿提交推送后仍须以该分支最新 run 的实际结论为准。
 
 ## 已知限制
 

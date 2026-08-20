@@ -17,7 +17,8 @@ describe("evidence excerpt form adapter", () => {
   ] as const)("creates a %s payload with only the applicable location field", (locatorType, location) => {
     const form = { ...createEmptyEvidenceExcerptForm("work-1"), locatorType, ...location, paraphrase: "A bounded note" };
     const input = evidenceFormToInput(form);
-    expect(input).toMatchObject({ workId: "work-1", locatorType, quote: undefined, paraphrase: "A bounded note" });
+    expect(input).toMatchObject({ workId: "work-1", locatorType, paraphrase: "A bounded note" });
+    expect(input).not.toHaveProperty("quote");
     if (locatorType === "page") {
       expect(input.page).toBe("12");
       expect(input.locator).toBeUndefined();
@@ -35,7 +36,7 @@ describe("evidence excerpt form adapter", () => {
     ]));
     form.reviewer = "Reviewer";
     form.reviewedAtLocal = "2026-08-20T03:04";
-    expect(evidenceFormToInput(form).reviewedAt).toBe("2026-08-20T03:04:00.000Z");
+    expect(evidenceFormToInput(form).reviewedAt).toBe(new Date(form.reviewedAtLocal).toISOString());
   });
 
   it("loads and edits a legacy locator without guessing its type", () => {

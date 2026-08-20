@@ -67,13 +67,13 @@ describe("institution profile form adapter", () => {
 
   it("round trips structured fields and datetime-local values", () => {
     const form = institutionProfileToForm(profile);
-    expect(form.verifiedAtLocal).toBe("2026-08-20T02:03");
+    expect(new Date(form.verifiedAtLocal).toISOString()).toBe("2026-08-20T02:03:00.000Z");
     const restored = institutionFormToProfile(form);
     expect(restored).toMatchObject({
       faculty: "Graduate Faculty",
       school: "School of Research",
       verifiedBy: "Reviewer",
-      verifiedAt: "2026-08-20T02:03:00.000Z",
+      verifiedAt: new Date(form.verifiedAtLocal).toISOString(),
       sourceNote: "Official handbook",
     });
     expect(restored.requiredSections).toEqual([

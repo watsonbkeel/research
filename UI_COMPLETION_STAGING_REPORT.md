@@ -40,7 +40,7 @@
 ## CI 与 staging 状态
 
 - GitHub Actions workflow `.github/workflows/ci.yml` 已显式执行 `npm ci`、lint、typecheck、全部测试、formal E2E 和 build。
-- GitHub Actions run ID/status：待推送 `codex/ui-completion-staging-1` 后记录；远程 CI 未通过前不宣称本轮 staging 完成。
+- GitHub Actions run ID/status：无。`git push -u origin codex/ui-completion-staging-1` 因当前环境没有 GitHub 凭据而未执行成功，`gh` CLI 也不可用，因此没有可声称的远程 CI 结果。
 - 真实 staging 尚未执行；请按 [STAGING_ACCEPTANCE_CHECKLIST.md](./STAGING_ACCEPTANCE_CHECKLIST.md) 完成人工验收。
 - 准确结论：UI 闭环完成，代码与受控 E2E 通过，已具备真实 staging 验收条件。
 

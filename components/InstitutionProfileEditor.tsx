@@ -37,10 +37,6 @@ const verificationStatuses: InstitutionProfile["verificationStatus"][] = [
   "verified",
 ];
 
-function fieldId(value: string) {
-  return `institution-${value.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-}
-
 export function InstitutionProfileEditor({ profile, availableSections, saving, onSave }: InstitutionProfileEditorProps) {
   const [form, setForm] = useState<InstitutionProfileForm>(() => institutionProfileToForm(profile));
   const [errors, setErrors] = useState<Array<{ field: string; message: string }>>([]);

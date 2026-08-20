@@ -13,18 +13,19 @@ import {
   ShieldCheck,
   Sparkles,
   Table2,
-  Trash2,
   Upload,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { FullTextAsset, WorkspaceData } from "@/lib/types";
-import type { EvidenceExcerpt } from "@/lib/evidence-excerpts";
+import type { EvidenceExcerpt, EvidenceExcerptInput } from "@/lib/evidence-excerpts";
 import type { InstitutionProfile } from "@/lib/institution";
 import type { AnalysisPlan, Hypothesis, ResearchPlanState } from "@/lib/research-plan";
 import type { AnalysisRun } from "@/lib/results";
 import type { DraftVersion, Manuscript, ManuscriptSection } from "@/lib/manuscript";
 import type { DatasetRegistry } from "@/lib/datasets";
 import type { PaperConcept, ProjectDocument } from "@/lib/project-documents";
+import { InstitutionProfileEditor } from "@/components/InstitutionProfileEditor";
+import { EvidenceExcerptEditor } from "@/components/EvidenceExcerptEditor";
 
 export type DoctoralView = "manuscript" | "evidence-excerpts" | "research-plan" | "results" | "outputs" | "review" | "materials" | "figures";
 
@@ -56,14 +57,15 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [institution, setInstitution] = useState<InstitutionProfile | null>(null);
+  const [savingInstitution, setSavingInstitution] = useState(false);
   const [auditStatus, setAuditStatus] = useState<{ blockers: number; warnings: number; consistency?: string }>({ blockers: 0, warnings: 0 });
   const [coverageStatus, setCoverageStatus] = useState<{ total: number; unsupported: number; unclassified: number }>({ total: 0, unsupported: 0, unclassified: 0 });
   const [formalGateBlocked, setFormalGateBlocked] = useState(true);
 
   useEffect(() => {
-    void Promise.all([fetch(`/api/projects/${encodeURIComponent(projectId)}/documents`), fetch(`/api/institution?projectId=${encodeURIComponent(projectId)}`)]).then(async ([manuscriptResponse, institutionResponse]) => {
+    void Promise.all([fetch(`/api/projects/${encodeURIComponent(projectId)}/documents`), fetch(`/api/projects/${encodeURIComponent(projectId)}/institution`)]).then(async ([manuscriptResponse, institutionResponse]) => {
       const documentResult = await manuscriptResponse.json() as { documents?: ProjectDocument[] };
-      const institutionResult = await institutionResponse.json() as { university?: string; wordLimit?: number | null; verificationStatus?: string };
+      const institutionResult = await institutionResponse.json() as InstitutionProfile;
       const firstDocument = documentResult.documents?.[0];
       setDocuments(documentResult.documents ?? []);
       setDocumentId(firstDocument?.id ?? "");
@@ -106,6 +108,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
   }
 
   const selected = useMemo(() => manuscript?.chapters.flatMap((chapter) => chapter.sections).find((section) => section.id === selectedId), [manuscript, selectedId]);
+  const availableInstitutionSections = useMemo(() => manuscript?.chapters.flatMap((chapter) => chapter.sections.map((section) => ({ id: section.id, number: section.number, title: section.title }))) ?? [], [manuscript]);
   const currentDocument = documents.find((item) => item.id === documentId);
   const currentVersionId = currentDocument?.currentVersionId;
   const formalExportUrl = currentVersionId
@@ -171,14 +174,22 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
 
   async function setEvidenceMode(evidenceMode: ProjectDocument["evidenceMode"]) { const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ evidenceMode }) }); const result = await response.json() as { document?: ProjectDocument; error?: string }; if (!response.ok || !result.document) return notify(apiError(result, "证据模式更新失败")); setDocuments((current) => current.map((item) => item.id === documentId ? result.document! : item)); setFormalGateBlocked(true); }
 
-  async function saveInstitution() {
-    if (!institution) return;
-    const response = await fetch(`/api/institution?projectId=${encodeURIComponent(projectId)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(institution) });
+  async function saveInstitution(nextProfile: InstitutionProfile) {
+    setSavingInstitution(true);
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/institution`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(nextProfile) });
     const result = await response.json() as InstitutionProfile & { error?: string };
+    setSavingInstitution(false);
     if (!response.ok) return notify(apiError(result, "院校配置保存失败"));
     setInstitution(result);
     setFormalGateBlocked(true);
-    notify("院校模板配置已保存");
+    const affectedDocumentCount = response.headers.get("x-affected-document-count") ?? "0";
+    const documentResponse = await fetch(`/api/projects/${encodeURIComponent(projectId)}/documents`);
+    const documentResult = await documentResponse.json() as { documents?: ProjectDocument[] };
+    const refreshedDocuments = documentResult.documents ?? [];
+    setDocuments(refreshedDocuments);
+    const refreshedDocument = refreshedDocuments.find((item) => item.id === documentId);
+    if (refreshedDocument) setManuscript(refreshedDocument.manuscript);
+    notify(`院校模板已保存，并为受影响文档创建了新的不可变版本（${affectedDocumentCount} 份）。`);
   }
 
   async function loadVersions(sectionId: string) {
@@ -218,7 +229,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
         </div>
         <div className="manuscript-meta-actions"><span className={institution?.verificationStatus === "verified" ? "quality-ok" : "quality-warning"}>{institution?.university ?? "院校配置加载中"} · {institution?.verificationStatus === "verified" ? "官方要求已核验" : "通用澳洲基线，尚未指定院校"}</span><button className="button secondary" type="button" onClick={() => void saveMetadata()} disabled={saving}><Save size={15} />保存稿件设置</button></div>
       </section>
-      {institution && <section className="institution-settings panel"><div className="panel-title"><BookOpen size={17} /><div><h2>目标大学模板</h2><p>未核验官方来源前，只能作为 generic Australian baseline。</p></div></div><div className="institution-fields"><label><span>University</span><input value={institution.university} onChange={(event) => setInstitution({ ...institution, university: event.target.value })} /></label><label><span>Faculty / School</span><input value={`${institution.faculty}${institution.school ? ` / ${institution.school}` : ""}`} onChange={(event) => setInstitution({ ...institution, faculty: event.target.value, school: "" })} /></label><label><span>Program</span><input value={institution.program} onChange={(event) => setInstitution({ ...institution, program: event.target.value })} /></label><label><span>Milestone</span><input value={institution.milestoneName} onChange={(event) => setInstitution({ ...institution, milestoneName: event.target.value })} /></label><label><span>Word limit</span><input type="number" min="0" value={institution.wordLimit ?? ""} onChange={(event) => setInstitution({ ...institution, wordLimit: event.target.value ? Number(event.target.value) : null })} /></label><label><span>Official URL</span><input type="url" value={institution.officialUrl} onChange={(event) => setInstitution({ ...institution, officialUrl: event.target.value })} /></label><label><span>Verification status</span><select value={institution.verificationStatus} onChange={(event) => setInstitution({ ...institution, verificationStatus: event.target.value as InstitutionProfile["verificationStatus"] })}><option value="generic-baseline">generic-baseline</option><option value="pending-verification">pending-verification</option><option value="verified">verified</option></select></label><label className="full"><span>Required sections（每行一项）</span><textarea value={institution.requiredSections.join("\n")} onChange={(event) => setInstitution({ ...institution, requiredSections: event.target.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) })} /></label><label className="full"><span>Ethics / AI / formatting requirements</span><textarea value={`${institution.ethicsPrerequisites}\n${institution.aiUseRequirements}\n${institution.formattingRequirements}`} onChange={(event) => { const [ethicsPrerequisites = "", aiUseRequirements = "", formattingRequirements = ""] = event.target.value.split(/\r?\n/); setInstitution({ ...institution, ethicsPrerequisites, aiUseRequirements, formattingRequirements }); }} /></label></div><div className="form-actions"><button className="button secondary" type="button" onClick={() => void saveInstitution()}><Save size={15} />保存院校模板</button></div></section>}
+      {institution && <section className="institution-settings panel"><div className="panel-title"><BookOpen size={17} /><div><h2>目标大学模板</h2><p>院校模板写入新文档版本；旧版本不会随当前模板设置变化。</p></div></div><InstitutionProfileEditor profile={institution} availableSections={availableInstitutionSections} saving={savingInstitution} onSave={saveInstitution} /></section>}
       <div className="manuscript-layout">
         <aside className="chapter-tree" aria-label="章节树">
           <div className="tree-heading"><strong>Proposal outline</strong><span>{manuscript.chapters.length} chapters</span></div>
@@ -247,14 +258,63 @@ export function EvidenceExcerptCenter({ data, notify, projectId }: { data: Works
   const [excerpts, setExcerpts] = useState<EvidenceExcerpt[]>([]);
   const [assets, setAssets] = useState<FullTextAsset[]>([]);
   const [assetFile, setAssetFile] = useState<File | null>(null);
-  const [form, setForm] = useState({ workId: data.works[0]?.id ?? "", fullTextAssetId: "", locator: "", page: "", quote: "", paraphrase: "", claimId: "", supportDirection: "supporting", strength: "medium", relevance: "medium", reviewer: "", reviewDate: "", verificationStatus: "unverified", externalModelUsePermission: "prohibited", exportPermission: "allowed" });
-  async function refresh() { const [excerptResponse, assetResponse] = await Promise.all([fetch(`/api/evidence-excerpts?projectId=${encodeURIComponent(projectId)}`), fetch(`/api/projects/${encodeURIComponent(projectId)}/full-text`)]); const result = await excerptResponse.json() as { excerpts?: EvidenceExcerpt[] }; const assetResult = await assetResponse.json() as { assets?: FullTextAsset[] }; setExcerpts(result.excerpts ?? []); setAssets(assetResult.assets ?? []); }
-  useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  async function uploadAsset() { if (!assetFile || !form.workId) return notify("请选择 Work 和 PDF 文件"); const body = new FormData(); body.set("workId", form.workId); body.set("file", assetFile); body.set("rightsStatus", "unknown"); const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/full-text`, { method: "POST", body }); const result = await response.json() as { asset?: FullTextAsset; error?: string }; if (!response.ok || !result.asset) return notify(result.error ?? "PDF解析失败"); setAssetFile(null); setForm((current) => ({ ...current, fullTextAssetId: result.asset!.id })); await refresh(); notify(`PDF已按页解析：${result.asset.pageCount ?? 0} 页；默认禁止发送给外部模型`); }
-  async function add(event: FormEvent) { event.preventDefault(); const response = await fetch(`/api/evidence-excerpts?projectId=${encodeURIComponent(projectId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...form, fullTextAssetId: form.fullTextAssetId || undefined, page: form.page || undefined, claimId: form.claimId || null, quote: form.quote || undefined, paraphrase: form.paraphrase || undefined, reviewer: form.reviewer || undefined, reviewDate: form.reviewDate || undefined }) }); const result = await response.json() as { excerpt?: EvidenceExcerpt; error?: string }; if (!response.ok) return notify(apiError(result, "证据摘录保存失败")); setForm((current) => ({ ...current, locator: "", page: "", quote: "", paraphrase: "", claimId: "" })); await refresh(); notify("EvidenceExcerpt已保存；human_verified必须有研究者核验信息"); }
-  async function remove(id: string) { const response = await fetch(`/api/evidence-excerpts?id=${encodeURIComponent(id)}&projectId=${encodeURIComponent(projectId)}`, { method: "DELETE" }); if (!response.ok) return notify("证据摘录删除失败"); await refresh(); notify("EvidenceExcerpt已删除"); }
-  return <div className="page-content doctoral-page"><header className="section-header"><p className="eyebrow">Claim-level evidence</p><h1>证据摘录</h1><p>每条外部论断必须能定位到文献页码、段落、表格或图形。搜索发现不能直接成为证据；默认禁止全文发送给外部模型。</p></header><section className="panel evidence-upload"><div className="panel-title"><Upload size={17}/><div><h2>上传本地 PDF</h2><p>文件保存在当前项目的 .local 路径并按页解析；系统不会自动抓取付费全文。</p></div></div><div className="evidence-form-grid"><label><span>关联 Work</span><select value={form.workId} onChange={(event) => setForm({ ...form, workId: event.target.value })}>{data.works.map((work) => <option key={work.id} value={work.id}>{work.id} · {work.title.slice(0, 60)}</option>)}</select></label><label><span>PDF 文件</span><input type="file" accept="application/pdf" onChange={(event) => setAssetFile(event.target.files?.[0] ?? null)} /></label></div><button className="button secondary" type="button" onClick={() => void uploadAsset()} disabled={!assetFile}><Upload size={15}/>上传并解析</button>{assets.length > 0 && <p className="form-hint">已解析全文：{assets.map((asset) => `${asset.id}（${asset.pageCount ?? "?"}页，${asset.status}，外部模型：${asset.externalModelUsePermission}）`).join("；")}</p>}</section><form className="evidence-form panel" onSubmit={add}><div className="evidence-form-grid"><label><span>来源</span><select value={form.workId} onChange={(event) => setForm({ ...form, workId: event.target.value })}>{data.works.map((work) => <option key={work.id} value={work.id}>{work.id} · {work.title.slice(0, 60)}</option>)}</select></label><label><span>全文资产</span><select value={form.fullTextAssetId} onChange={(event) => setForm({ ...form, fullTextAssetId: event.target.value })}><option value="">无（人工定位）</option>{assets.filter((asset) => asset.workId === form.workId).map((asset) => <option key={asset.id} value={asset.id}>{asset.id} · {asset.status}</option>)}</select></label><label><span>定位（页码/段落/表格）</span><input value={form.locator} onChange={(event) => setForm({ ...form, locator: event.target.value })} placeholder="p. 488, Table 2" /></label><label><span>页码</span><input value={form.page} onChange={(event) => setForm({ ...form, page: event.target.value })} /></label><label><span>Claim ID</span><input value={form.claimId} onChange={(event) => setForm({ ...form, claimId: event.target.value })} placeholder="claim-1" /></label><label><span>支持方向</span><select value={form.supportDirection} onChange={(event) => setForm({ ...form, supportDirection: event.target.value })}><option value="supporting">supporting</option><option value="contradicting">contradicting</option><option value="mixed">mixed</option><option value="context-only">context-only</option></select></label><label className="full"><span>原文短引文（可选）</span><textarea value={form.quote} onChange={(event) => setForm({ ...form, quote: event.target.value })} maxLength={2000} placeholder="若关联本地全文，系统会检查连续原文。" /></label><label className="full"><span>研究者释义</span><textarea value={form.paraphrase} onChange={(event) => setForm({ ...form, paraphrase: event.target.value })} maxLength={5000} placeholder="只填写支持该论断所需的最小内容。" /></label><label><span>核验状态</span><select value={form.verificationStatus} onChange={(event) => setForm({ ...form, verificationStatus: event.target.value })}><option value="unverified">unverified</option><option value="ai_suggested">ai_suggested</option><option value="human_verified">human_verified</option><option value="rejected">rejected</option></select></label><label><span>核验者</span><input value={form.reviewer} onChange={(event) => setForm({ ...form, reviewer: event.target.value })} /></label><label><span>核验日期</span><input type="date" value={form.reviewDate} onChange={(event) => setForm({ ...form, reviewDate: event.target.value })} /></label></div><button className="button primary" type="submit"><Plus size={15} />保存摘录</button></form><div className="table-shell evidence-table"><table><thead><tr><th>来源 / 定位</th><th>Claim</th><th>内容</th><th>方向 / 状态</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{excerpts.map((excerpt) => <tr key={excerpt.id}><td><strong>{excerpt.workId}</strong><span>{excerpt.page ? `p. ${excerpt.page}` : "未填写页码"}{excerpt.locator ? ` · ${excerpt.locator}` : ""}</span></td><td>{excerpt.claimId ?? "未绑定"}</td><td className="excerpt-copy">{excerpt.paraphrase ?? excerpt.quote}</td><td><span className={`status ${excerpt.verificationStatus === "human_verified" ? "positive" : "warning"}`}>{excerpt.supportDirection} · {excerpt.verificationStatus}</span></td><td><button className="icon-button danger" type="button" onClick={() => void remove(excerpt.id)} aria-label="删除证据摘录" title="删除"><Trash2 size={15} /></button></td></tr>)}{excerpts.length === 0 && <tr><td colSpan={5}><div className="empty-review">尚无摘录；从第一条需要页码定位的外部论断开始。</div></td></tr>}</tbody></table></div></div>;
+  const [uploadWorkId, setUploadWorkId] = useState(data.works[0]?.id ?? "");
+  const [editingExcerpt, setEditingExcerpt] = useState<EvidenceExcerpt | undefined>();
+  const [savingExcerpt, setSavingExcerpt] = useState(false);
+
+  async function refresh() {
+    const [excerptResponse, assetResponse] = await Promise.all([
+      fetch(`/api/projects/${encodeURIComponent(projectId)}/evidence-excerpts`),
+      fetch(`/api/projects/${encodeURIComponent(projectId)}/full-text`),
+    ]);
+    const result = await excerptResponse.json() as { excerpts?: EvidenceExcerpt[] };
+    const assetResult = await assetResponse.json() as { assets?: FullTextAsset[] };
+    setExcerpts(result.excerpts ?? []);
+    setAssets(assetResult.assets ?? []);
+  }
+
+  useEffect(() => { void refresh(); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function uploadAsset() {
+    if (!assetFile || !uploadWorkId) return notify("请选择 Work 和 PDF 文件");
+    const body = new FormData();
+    body.set("workId", uploadWorkId);
+    body.set("file", assetFile);
+    body.set("rightsStatus", "unknown");
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/full-text`, { method: "POST", body });
+    const result = await response.json() as { asset?: FullTextAsset; error?: string };
+    if (!response.ok || !result.asset) return notify(result.error ?? "PDF解析失败");
+    setAssetFile(null);
+    await refresh();
+    notify(`PDF已按页解析：${result.asset.pageCount ?? 0} 页；默认禁止发送给外部模型`);
+  }
+
+  async function saveExcerpt(input: EvidenceExcerptInput) {
+    setSavingExcerpt(true);
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/evidence-excerpts`, {
+      method: input.id ? "PATCH" : "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const result = await response.json() as { excerpt?: EvidenceExcerpt; error?: string };
+    setSavingExcerpt(false);
+    if (!response.ok || !result.excerpt) return notify(apiError(result, "证据摘录保存失败"));
+    setEditingExcerpt(undefined);
+    await refresh();
+    notify("EvidenceExcerpt 已保存；相关文档需要创建或刷新版本，并重新运行正式导出检查。");
+  }
+
+  async function removeExcerpt(id: string) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/evidence-excerpts?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!response.ok) return notify("证据摘录删除失败");
+    if (editingExcerpt?.id === id) setEditingExcerpt(undefined);
+    await refresh();
+    notify("EvidenceExcerpt已删除；正式 Gate 需要重新运行");
+  }
+
+  return <div className="page-content doctoral-page"><header className="section-header"><p className="eyebrow">Claim-level evidence</p><h1>证据摘录</h1><p>每条外部论断必须能定位到文献页码、章节、小节、段落、表或图。定位类型会写入 EvidenceExcerpt，正式版本不会猜测旧定位。</p></header><section className="panel evidence-upload"><div className="panel-title"><Upload size={17}/><div><h2>上传本地 PDF</h2><p>文件保存在当前项目的 .local 路径并按页解析；系统不会自动抓取付费全文。</p></div></div><div className="evidence-form-grid"><label><span>关联 Work</span><select value={uploadWorkId} onChange={(event) => setUploadWorkId(event.target.value)}>{data.works.map((work) => <option key={work.id} value={work.id}>{work.id} · {work.title.slice(0, 60)}</option>)}</select></label><label><span>PDF 文件</span><input type="file" accept="application/pdf" onChange={(event) => setAssetFile(event.target.files?.[0] ?? null)} /></label></div><button className="button secondary" type="button" onClick={() => void uploadAsset()} disabled={!assetFile}><Upload size={15}/>上传并解析</button>{assets.length > 0 && <p className="form-hint">已解析全文：{assets.map((asset) => `${asset.id}（${asset.pageCount ?? "?"}页，${asset.status}，外部模型：${asset.externalModelUsePermission}）`).join("；")}</p>}</section><EvidenceExcerptEditor data={data} assets={assets} initial={editingExcerpt} excerpts={excerpts} saving={savingExcerpt} onSave={saveExcerpt} onCancelEdit={() => setEditingExcerpt(undefined)} onEdit={setEditingExcerpt} onDelete={removeExcerpt} /></div>;
 }
+
 
 export function ResearchPlanCenter({ data, notify, projectId }: { data: WorkspaceData; notify: (message: string) => void; projectId: string }) {
   const [plan, setPlan] = useState<ResearchPlanState>({ schemaVersion: 1, hypotheses: [], analysisPlans: [], updatedAt: "" });

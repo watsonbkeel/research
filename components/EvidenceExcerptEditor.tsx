@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil, Plus, Save, Trash2, X } from "lucide-react";
+import { Pencil, Save, Trash2, X } from "lucide-react";
 import React from "react";
 import { useEffect, useState } from "react";
 import type { FullTextAsset, WorkspaceData } from "@/lib/types";
@@ -51,7 +51,7 @@ export function EvidenceExcerptEditor({ data, assets, initial, excerpts = [], sa
 
   function changeLocatorType(value: EvidenceExcerptForm["locatorType"]) {
     if (value === "page") update({ locatorType: value, locator: "" });
-    else update({ locatorType: value, page: "" });
+    else update({ locatorType: value, page: "", locator: "" });
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {

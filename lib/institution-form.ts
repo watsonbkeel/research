@@ -51,11 +51,6 @@ function localDateTimeFromIso(value: string | undefined) {
   return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}T${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`;
 }
 
-function nonEmpty(value: string) {
-  const trimmed = value.trim();
-  return trimmed || undefined;
-}
-
 function sectionFormFromValue(
   value: string | InstitutionRequiredSection,
   existingKeys: string[],

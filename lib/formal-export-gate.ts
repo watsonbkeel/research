@@ -8,6 +8,7 @@ import { claimCoverageForVersion } from "./claim-coverage";
 import type { ExportAuditManifest, FormalExportGateResult } from "./types";
 import { qualityReportForVersion } from "./quality";
 import { renderVersionCitations, renderVersionSectionContent } from "./citation-service";
+import { validateInstitutionProfileForFormalExport } from "./institution";
 
 function citationRenderBlocker(error: unknown) {
   const message = error instanceof Error ? error.message : "正式引用渲染失败。";
@@ -39,6 +40,14 @@ export async function checkFormalExportGate(input: { projectId: string; document
     if ((snapshot.citationClusters ?? []).some((cluster) => cluster.documentOrder === undefined)) blockers.push({ code: "citation-cluster-document-order-missing", message: "正式版本的 CitationCluster 缺少整文档 documentOrder。" });
     if (snapshot.evidenceBindingHash !== documentVersionEvidenceBindingHash(snapshot)) blockers.push({ code: "evidence-binding-hash-invalid", message: "指定文档版本冻结的证据链 hash 校验失败。" });
     if (snapshot.proposalInputHash !== documentVersionProposalInputHash(snapshot)) blockers.push({ code: "proposal-input-hash-invalid", message: "指定文档版本冻结的开题输入 hash 校验失败。" });
+    const snapshotExcerpts = new Map((snapshot.evidenceExcerptsSnapshot ?? []).flatMap((value) => value && typeof value === "object" && "id" in value ? [[String(value.id), value as { id: string; page?: string; locatorType?: string; locator?: string }]] : []));
+    const citationItems = new Map((snapshot.citationItems ?? []).map((item) => [item.id, item]));
+    for (const binding of snapshot.claimEvidenceCitationBindings ?? []) {
+      const excerpt = snapshotExcerpts.get(binding.evidenceExcerptId); const item = citationItems.get(binding.citationItemId);
+      const hasTypedExcerptLocator = Boolean(excerpt?.page || (excerpt?.locator && excerpt.locatorType));
+      const hasTypedCitationLocator = Boolean(item?.locator && item.locatorType);
+      if (!hasTypedExcerptLocator || !hasTypedCitationLocator) blockers.push({ code: "citation-locator-type-missing", message: `Binding ${binding.id} 的 EvidenceExcerpt 或 CitationItem 缺少明确 locatorType。`, sectionId: binding.sectionId, claimId: binding.claimId, workId: binding.workId });
+    }
     try {
       const rendered = renderVersionCitations(snapshot);
       for (const section of snapshot.sections) {
@@ -70,8 +79,7 @@ export async function checkFormalExportGate(input: { projectId: string; document
   const quality = input.versionId ? qualityReportForVersion(input.projectId, input.documentId, input.versionId) : undefined;
   if (!quality || quality.documentVersionId !== input.versionId || quality.contentHash !== snapshot?.contentHash) blockers.push({ code: "quality-report-version-mismatch", message: "缺少与指定版本及 contentHash 精确匹配的 QualityReport。" });
   else if (quality.errors.length) blockers.push({ code: "quality-report-errors", message: `QualityReport 仍有 ${quality.errors.length} 个 error。` });
-  const requiredSections = reviewedDocument.manuscript.chapters.filter((chapter) => chapter.sections.length > 0);
-  for (const chapter of requiredSections) if (chapter.sections.every((section) => !section.content.trim())) blockers.push({ code: "required-section-empty", message: `章节 ${chapter.number} ${chapter.title} 为空。`, sectionId: chapter.id });
+  blockers.push(...validateInstitutionProfileForFormalExport(snapshot?.institutionProfileSnapshot, snapshot?.sections ?? []));
   for (const work of citedWorks) {
     const check = snapshot?.publicationStatusSnapshot?.filter((item) => item.workId === work.id).at(-1) ?? latestPublicationStatusCheck(input.projectId, work.id);
     if (!check || check.checkState !== "checked") blockers.push({ code: "publication-status-unchecked", message: `Work ${work.id} 尚未完成发表状态检查。`, workId: work.id });
@@ -79,7 +87,6 @@ export async function checkFormalExportGate(input: { projectId: string; document
     else if (check.status === "corrected") warnings.push({ code: "publication-corrected", message: `Work ${work.id} 存在更正记录。` });
     else if (check.status === "unknown" && (!input.versionId || !publicationStatusOverrideForVersion(input.projectId, work.id, input.versionId))) blockers.push({ code: "publication-unknown", message: `Work ${work.id} 的发表状态为 checked+unknown，必须有该版本人工确认。`, workId: work.id });
   }
-  if (!project.institution.trim() || /待指定|generic/i.test(project.institution)) blockers.push({ code: "institution-profile-missing", message: "目标院校尚未确认，不能作为正式提交版导出。" });
   if (audit.warnings.length) warnings.push(...audit.warnings.map((item) => ({ code: `citation-audit:${item.code}`, message: item.message })));
   const coveredClaimCount = coverage?.paragraphs.flatMap((paragraph) => paragraph.sentences).filter((sentence) => sentence.coverageStatus === "covered").length ?? 0;
   const unsupportedClaimCount = coverage?.paragraphs.flatMap((paragraph) => paragraph.sentences).filter((sentence) => ["unsupported", "unclassified"].includes(sentence.coverageStatus)).length ?? 0;

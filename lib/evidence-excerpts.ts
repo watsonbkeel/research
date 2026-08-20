@@ -4,12 +4,14 @@ import { readWorkspaceState, writeWorkspaceState } from "./storage";
 import { ensureEvidenceSchema } from "./evidence-store";
 import { readWorkspace } from "./storage";
 import { fullTextContainsQuote, getFullTextAsset } from "./full-text";
+import type { EvidenceLocatorType } from "./types";
 
 export const SUPPORT_DIRECTIONS = ["supporting", "contradicting", "mixed", "context-only"] as const;
 export type SupportDirection = (typeof SUPPORT_DIRECTIONS)[number];
 
 export const EVIDENCE_STRENGTHS = ["low", "medium", "high"] as const;
 export type EvidenceStrength = (typeof EVIDENCE_STRENGTHS)[number];
+export const EVIDENCE_LOCATOR_TYPES = ["page", "chapter", "section", "paragraph", "figure", "table"] as const satisfies readonly EvidenceLocatorType[];
 
 export const VERIFICATION_STATUSES = [
   "unverified",
@@ -33,6 +35,7 @@ export interface EvidenceExcerpt {
   id: string;
   workId: string;
   fullTextAssetId?: string;
+  locatorType?: EvidenceLocatorType;
   locator?: string;
   page?: string;
   quote?: string;
@@ -68,6 +71,7 @@ export interface EvidenceExcerptInput {
   id?: string;
   workId: string;
   fullTextAssetId?: string;
+  locatorType?: EvidenceLocatorType;
   locator?: string;
   page?: string | number;
   quote?: string;
@@ -150,14 +154,23 @@ function validateInput(input: EvidenceExcerptInput, allowLegacy = false): Omit<E
     throw new EvidenceExcerptValidationError("quotationLimit格式无效。");
   }
   const verificationStatus = ensureEnum(input.verificationStatus, VERIFICATION_STATUSES, "unverified", "verificationStatus");
+  const page = normalizePage(input.page);
+  const locator = optionalString(input.locator, "locator", 500);
+  const locatorType = page
+    ? "page"
+    : input.locatorType === undefined
+      ? undefined
+      : ensureEnum(input.locatorType, EVIDENCE_LOCATOR_TYPES, "page", "locatorType");
   if (!allowLegacy && ["human_verified", "claim_verified"].includes(verificationStatus) && (!reviewer || !reviewedAt)) throw new EvidenceExcerptValidationError("human_verified必须同时填写reviewer和reviewedAt。");
-  if (!allowLegacy && (quote || paraphrase) && !input.page && !input.locator) throw new EvidenceExcerptValidationError("直接引文或研究者释义必须填写page或locator定位。");
+  if (!allowLegacy && (quote || paraphrase) && !page && !locator) throw new EvidenceExcerptValidationError("直接引文或研究者释义必须填写page或locator定位。");
+  if (!allowLegacy && locator && !locatorType) throw new EvidenceExcerptValidationError("填写locator时必须明确locatorType。");
   return {
     projectId: undefined,
     workId: input.workId.trim(),
     fullTextAssetId,
-    locator: optionalString(input.locator, "locator", 500),
-    page: normalizePage(input.page),
+    locatorType,
+    locator,
+    page,
     quote,
     paraphrase,
     claimId: input.claimId ?? null,

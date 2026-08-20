@@ -4,7 +4,7 @@ import { defaultManuscript, manuscriptSchema, type DraftVersion, type Manuscript
 import { getProject, portfolioDatabase } from "./portfolio";
 import { hasCompletedRealAnalysis } from "./results";
 import { createHash } from "node:crypto";
-import type { DocumentVersion, EvidenceMode, ResearchMode } from "./types";
+import type { DocumentVersion, EvidenceLocatorType, EvidenceMode, ResearchMode } from "./types";
 import { readWorkspaceState } from "./storage";
 import { readInstitutionProfile } from "./institution";
 import type { InstitutionProfile } from "./institution";
@@ -64,7 +64,7 @@ export function hydrateCitationItemsFromBindings(version: DocumentVersion): Docu
   const excerpts = new Map(
     (hydrated.evidenceExcerptsSnapshot ?? []).flatMap((value) => {
       if (!value || typeof value !== "object" || !("id" in value)) return [];
-      return [[String(value.id), value as { id: string; workId?: string; page?: string; locator?: string }]] as const;
+      return [[String(value.id), value as { id: string; workId?: string; page?: string; locatorType?: EvidenceLocatorType; locator?: string }]] as const;
     }),
   );
 
@@ -73,10 +73,13 @@ export function hydrateCitationItemsFromBindings(version: DocumentVersion): Docu
     const excerpt = excerpts.get(binding.evidenceExcerptId);
     if (!item || item.workId !== binding.workId || !excerpt || excerpt.workId !== binding.workId) continue;
     if (item.locator) continue;
-    const locator = excerpt.page ?? excerpt.locator;
-    if (!locator) continue;
-    item.locatorType = "page";
-    item.locator = locator;
+    if (excerpt.page) {
+      item.locatorType = "page";
+      item.locator = excerpt.page;
+    } else if (excerpt.locator && excerpt.locatorType) {
+      item.locatorType = excerpt.locatorType;
+      item.locator = excerpt.locator;
+    }
   }
 
   for (const cluster of hydrated.citationClusters ?? []) {
@@ -89,10 +92,10 @@ export function hydrateCitationItemsFromBindings(version: DocumentVersion): Docu
 function buildDocumentVersion(projectId: string, document: ProjectDocument, input: { id: string; versionNumber: number; parentVersionId?: string; createdBy: string; createdAt: string; lifecycleStatus?: DocumentVersion["lifecycleStatus"]; idempotencyKey?: string }) {
   const workspace = readWorkspaceState<import("./types").WorkspaceData>("workspace", projectId);
   const researchPlan = readWorkspaceState<unknown>("research_plan", projectId) ?? { schemaVersion: 1, hypotheses: [], analysisPlans: [] };
-  const evidence = readWorkspaceState<Array<{ id: string; workId: string; verificationStatus: string; page?: string; locator?: string; quote?: string; paraphrase?: string }>>("evidence_excerpts", projectId) ?? [];
+  const evidence = readWorkspaceState<Array<{ id: string; workId: string; verificationStatus: string; page?: string; locatorType?: EvidenceLocatorType; locator?: string; quote?: string; paraphrase?: string }>>("evidence_excerpts", projectId) ?? [];
   const citation = snapshotCitationData(document); const project = getProject(projectId);
   const hasPublicationChecks = portfolioDatabase().prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='publication_status_checks'").get(); const publicationStatusSnapshot = hasPublicationChecks ? (portfolioDatabase().prepare("SELECT payload_json AS payload FROM publication_status_checks WHERE project_id=? ORDER BY checked_at").all(projectId) as Array<{ payload: string }>).map((row) => parse<import("./types").PublicationStatusCheckResult>(row.payload, {} as import("./types").PublicationStatusCheckResult)) : [];
-  const snapshot: DocumentVersion = { id: input.id, projectId, documentId: document.id, versionNumber: input.versionNumber, parentVersionId: input.parentVersionId, title: document.title, researchMode: document.researchMode, evidenceMode: document.evidenceMode, targetVenue: document.targetVenue, citationStyle: project?.citationStyle ?? "APA 7", manuscriptSnapshot: structuredClone(document.manuscript), sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, citationItemIds: citation.citationClusters.filter((cluster) => cluster.sectionId === section.id).flatMap((cluster) => cluster.items.map((item) => item.id)), evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), claims: structuredClone(workspace?.claims ?? []), works: structuredClone(workspace?.works ?? []), citationItems: citation.citationItems, citationClusters: citation.citationClusters, claimEvidenceCitationBindings: [], evidenceReferences: evidence.map((item) => ({ evidenceExcerptId: item.id, evidenceExcerptHash: contentHash(JSON.stringify({ quote: item.quote, paraphrase: item.paraphrase, locator: item.page ?? item.locator, verificationStatus: item.verificationStatus, workId: item.workId })), workId: item.workId, verificationStatus: item.verificationStatus, locator: item.page ?? item.locator })), evidenceExcerptsSnapshot: structuredClone(evidence), publicationStatusSnapshot, workspaceSnapshot: structuredClone(workspace), researchPlanSnapshot: structuredClone(researchPlan), researchQuestionsSnapshot: structuredClone(readWorkspaceState<unknown>("research_questions", projectId) ?? []), constructsSnapshot: structuredClone(workspace?.constructs ?? []), hypothesesSnapshot: structuredClone((researchPlan as { hypotheses?: unknown }).hypotheses ?? []), experimentsSnapshot: structuredClone(workspace?.experiments ?? []), institutionProfileSnapshot: structuredClone(readInstitutionProfile(projectId)), approvalStatus: "not_reviewed", lifecycleStatus: input.lifecycleStatus ?? "reviewable", idempotencyKey: input.idempotencyKey, createdBy: input.createdBy, createdAt: input.createdAt };
+  const snapshot: DocumentVersion = { id: input.id, projectId, documentId: document.id, versionNumber: input.versionNumber, parentVersionId: input.parentVersionId, title: document.title, researchMode: document.researchMode, evidenceMode: document.evidenceMode, targetVenue: document.targetVenue, citationStyle: project?.citationStyle ?? "APA 7", manuscriptSnapshot: structuredClone(document.manuscript), sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, citationItemIds: citation.citationClusters.filter((cluster) => cluster.sectionId === section.id).flatMap((cluster) => cluster.items.map((item) => item.id)), evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), claims: structuredClone(workspace?.claims ?? []), works: structuredClone(workspace?.works ?? []), citationItems: citation.citationItems, citationClusters: citation.citationClusters, claimEvidenceCitationBindings: [], evidenceReferences: evidence.map((item) => ({ evidenceExcerptId: item.id, evidenceExcerptHash: contentHash(JSON.stringify({ quote: item.quote, paraphrase: item.paraphrase, page: item.page, locatorType: item.page ? "page" : item.locatorType, locator: item.locator, verificationStatus: item.verificationStatus, workId: item.workId })), workId: item.workId, verificationStatus: item.verificationStatus, page: item.page, locatorType: item.page ? "page" : item.locatorType, locator: item.locator })), evidenceExcerptsSnapshot: structuredClone(evidence), publicationStatusSnapshot, workspaceSnapshot: structuredClone(workspace), researchPlanSnapshot: structuredClone(researchPlan), researchQuestionsSnapshot: structuredClone(readWorkspaceState<unknown>("research_questions", projectId) ?? []), constructsSnapshot: structuredClone(workspace?.constructs ?? []), hypothesesSnapshot: structuredClone((researchPlan as { hypotheses?: unknown }).hypotheses ?? []), experimentsSnapshot: structuredClone(workspace?.experiments ?? []), institutionProfileSnapshot: structuredClone(readInstitutionProfile(projectId)), approvalStatus: "not_reviewed", lifecycleStatus: input.lifecycleStatus ?? "reviewable", idempotencyKey: input.idempotencyKey, createdBy: input.createdBy, createdAt: input.createdAt };
   snapshot.contentHash = documentVersionContentHash(snapshot);
   snapshot.evidenceBindingHash = documentVersionEvidenceBindingHash(snapshot);
   snapshot.proposalInputHash = documentVersionProposalInputHash(snapshot);

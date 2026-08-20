@@ -14,6 +14,7 @@ export type ResearchMode = "prospective" | "empirical" | "theoretical" | "review
 export type EvidenceMode = "exploratory" | "formal";
 export type CitationStyleName = "APA 7" | "GB/T 7714";
 export type CitationProcessorStyle = "apa" | "gb7714";
+export type EvidenceLocatorType = "page" | "chapter" | "section" | "paragraph" | "figure" | "table";
 export type PublicationStatusCheckState = "unchecked" | "checked" | "failed";
 export type PublicationStatus = "clear" | "corrected" | "retracted" | "expression_of_concern" | "unknown";
 
@@ -153,6 +154,7 @@ export interface EvidenceExcerptRecord {
   quote?: string;
   paraphrase?: string;
   page?: string;
+  locatorType?: EvidenceLocatorType;
   locator?: string;
   claimId?: string;
   supportDirection: "supporting" | "contradicting" | "mixed" | "context-only";
@@ -216,7 +218,7 @@ export interface CitationAuditReport {
 
 export type CoverageClassification = "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method" | "literature_definition" | "author_defined_term" | "definition" | "connective" | "heading" | "unknown";
 export interface CitationOffset { citationItemId: string; workId: string; startOffset: number; endOffset: number; locatorType?: string; locator?: string }
-export interface CitationItem { id: string; workId: string; locatorType?: "page" | "chapter" | "section" | "paragraph" | "figure" | "table"; locator?: string; prefix?: string; suffix?: string; suppressAuthor?: boolean }
+export interface CitationItem { id: string; workId: string; locatorType?: EvidenceLocatorType; locator?: string; prefix?: string; suffix?: string; suppressAuthor?: boolean }
 export interface CitationCluster {
   id: string;
   sectionId: string;
@@ -269,7 +271,7 @@ export interface DocumentVersion {
   works?: Work[];
   citationItems?: CitationItem[];
   citationClusters?: CitationCluster[];
-  evidenceReferences?: Array<{ evidenceExcerptId: string; evidenceExcerptHash: string; workId: string; verificationStatus: string; locator?: string }>;
+  evidenceReferences?: Array<{ evidenceExcerptId: string; evidenceExcerptHash: string; workId: string; verificationStatus: string; locatorType?: EvidenceLocatorType; locator?: string; page?: string }>;
   evidenceExcerptsSnapshot?: unknown[];
   publicationStatusSnapshot?: PublicationStatusCheckResult[];
   workspaceSnapshot?: WorkspaceData;
@@ -311,7 +313,7 @@ export interface QuarantinedDraft {
 
 export interface FormalExportGateResult {
   allowed: boolean;
-  blockers: Array<{ code: string; message: string; sectionId?: string; claimId?: string; workId?: string }>;
+  blockers: Array<{ code: string; message: string; sectionId?: string; claimId?: string; workId?: string; requiredSectionKey?: string; label?: string; mappedSectionId?: string; currentCharacters?: number; minimumCharacters?: number }>;
   warnings: Array<{ code: string; message: string }>;
   evidenceSummary: { candidateCount: number; verifiedWorkCount: number; citedWorkCount: number; humanVerifiedExcerptCount: number; coveredClaimCount: number; unsupportedClaimCount: number; unknownPublicationStatusCount: number };
 }

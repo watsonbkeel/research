@@ -22,9 +22,13 @@ export async function GET(request: Request) {
   if (!project || !document) return new Response(JSON.stringify({ error: "项目或 Confirmation Proposal 不存在。" }), { status: 404, headers: { "content-type": "application/json" } });
   const gate = formal ? await checkFormalExportGate({ projectId, documentId: document.id, versionId }) : undefined;
   if (gate && !gate.allowed) return new Response(JSON.stringify({ error: "正式 Proposal 导出被统一质量门阻断。", gate }), { status: 409, headers: { "content-type": "application/json" } });
+  if (formal && versionId) {
+    const frozen = formalExportSnapshot(projectId, document.id, versionId);
+    const body = await exportConfirmationProposal({ formal: true, version: frozen.version });
+    return new Response(new Uint8Array(body), { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="${safeFileSlug(project.titleEn)}-confirmation-proposal-v${frozen.version.versionNumber}.docx"`, "cache-control": "no-store" } });
+  }
   const exportDocument = versionId ? documentForVersion(document, versionId) : document; if (!exportDocument) return new Response(JSON.stringify({ error: "指定版本不存在。" }), { status: 404, headers: { "content-type": "application/json" } });
-  const frozen = formal && versionId ? formalExportSnapshot(projectId, document.id, versionId) : undefined;
-  const [workspace, researchPlan, institution, evidence] = frozen ? [frozen.workspace, frozen.researchPlan, frozen.institution, frozen.evidence] : await Promise.all([readWorkspace(projectId), readResearchPlan(projectId), Promise.resolve(readInstitutionProfile(projectId)), listEvidenceExcerpts({ projectId })]);
-  const body = await exportConfirmationProposal({ workspace, manuscript: exportDocument.manuscript, researchPlan, institution, evidence });
+  const [workspace, researchPlan, institution, evidence] = await Promise.all([readWorkspace(projectId), readResearchPlan(projectId), Promise.resolve(readInstitutionProfile(projectId)), listEvidenceExcerpts({ projectId })]);
+  const body = await exportConfirmationProposal({ formal: false, workspace, manuscript: exportDocument.manuscript, researchPlan, institution, evidence });
   return new Response(new Uint8Array(body), { headers: { "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "content-disposition": `attachment; filename="${safeFileSlug(project.titleEn)}-confirmation-proposal.docx"`, "cache-control": "no-store" } });
 }

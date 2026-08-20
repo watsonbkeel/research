@@ -3,7 +3,7 @@ import type { ProjectDocument } from "./project-documents";
 import { prospectiveWatermark } from "./project-documents";
 import type { ProjectRecord } from "./portfolio";
 import type { WorkspaceData } from "./types";
-import { renderCitationTokens, referencesFor, renderDocumentCitationClusters } from "./citation-service";
+import { referencesFor, renderCitationTokens, renderVersionCitations, renderVersionSectionContent } from "./citation-service";
 import type { CitationAuditReport } from "./types";
 
 export function safeFileSlug(value: string) {
@@ -31,12 +31,12 @@ export function exportProjectDocumentMarkdown(project: ProjectRecord, document: 
     `- Updated: ${document.updatedAt}`,
     "",
   ];
-  const formalRendered = document.versionSnapshot && workspace ? renderDocumentCitationClusters(document.versionSnapshot.citationClusters ?? [], workspace.works, style) : undefined;
+  const formalRendered = document.versionSnapshot ? renderVersionCitations(document.versionSnapshot) : undefined;
   for (const chapter of document.manuscript.chapters) {
     lines.push(`## ${chapter.number}. ${chapter.title}`, "");
-    for (const section of chapter.sections) { const clusters = document.versionSnapshot?.citationClusters?.filter((item) => item.sectionId === section.id).sort((left, right) => (left.documentOrder ?? Number.MAX_SAFE_INTEGER) - (right.documentOrder ?? Number.MAX_SAFE_INTEGER) || left.position - right.position) ?? []; let clusterIndex = 0; const rendered = formalRendered ? section.content.replace(/\[\[CITE:[^\]]+\]\]/g, () => formalRendered.citations.get(clusters[clusterIndex++]?.id ?? "") ?? "") : workspace ? renderCitationTokens(section.content, workspace.works, cited, style).content : section.content.replace(/\[\[CITE:[^\]]+\]\]/g, ""); lines.push(rendered.trim() || "_[Section not drafted]_", ""); }
+    for (const section of chapter.sections) { const rendered = formalRendered && document.versionSnapshot ? renderVersionSectionContent(document.versionSnapshot, section.id, section.content, formalRendered) : workspace ? renderCitationTokens(section.content, workspace.works, cited, style).content : section.content.replace(/\[\[CITE:[^\]]+\]\]/g, ""); lines.push(rendered.trim() || "_[Section not drafted]_", ""); }
   }
-  if (workspace) lines.push("## References", "", ...(formalRendered?.bibliography ?? referencesFor(workspace.works, cited, style)).map((item) => `- ${item.text}`), "");
+  if (formalRendered || workspace) lines.push("## References", "", ...(formalRendered?.bibliography ?? referencesFor(workspace!.works, cited, style)).map((item) => `- ${item.text}`), "");
   return lines.filter((line, index) => line !== "" || lines[index - 1] !== "").join("\n");
 }
 
@@ -51,17 +51,17 @@ export async function exportProjectDocumentDocx(project: ProjectRecord, document
     new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun(`${document.documentType} · ${document.mode} · ${document.status}`)] }),
     new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 480 }, children: [new TextRun(`Project: ${project.titleEn}`)] }),
   ];
-  const formalRendered = document.versionSnapshot && workspace ? renderDocumentCitationClusters(document.versionSnapshot.citationClusters ?? [], workspace.works, style) : undefined;
+  const formalRendered = document.versionSnapshot ? renderVersionCitations(document.versionSnapshot) : undefined;
   for (const chapter of document.manuscript.chapters) {
     body.push(new Paragraph({ text: `${chapter.number}. ${chapter.title}`, heading: HeadingLevel.HEADING_1, pageBreakBefore: chapter.order > 0 }));
     for (const section of chapter.sections) {
       if (chapter.sections.length > 1) body.push(new Paragraph({ text: `${section.number} ${section.title}`, heading: HeadingLevel.HEADING_2 }));
-      const clusters = document.versionSnapshot?.citationClusters?.filter((item) => item.sectionId === section.id).sort((left, right) => (left.documentOrder ?? Number.MAX_SAFE_INTEGER) - (right.documentOrder ?? Number.MAX_SAFE_INTEGER) || left.position - right.position) ?? []; let clusterIndex = 0; const renderedSection = formalRendered ? section.content.replace(/\[\[CITE:[^\]]+\]\]/g, () => formalRendered.citations.get(clusters[clusterIndex++]?.id ?? "") ?? "") : workspace ? renderCitationTokens(section.content, workspace.works, cited, style).content : section.content.replace(/\[\[CITE:[^\]]+\]\]/g, "");
+      const renderedSection = formalRendered && document.versionSnapshot ? renderVersionSectionContent(document.versionSnapshot, section.id, section.content, formalRendered) : workspace ? renderCitationTokens(section.content, workspace.works, cited, style).content : section.content.replace(/\[\[CITE:[^\]]+\]\]/g, "");
       const paragraphs = renderedSection.trim() ? renderedSection.split(/\n\s*\n/) : ["[Section not drafted]"];
       for (const value of paragraphs) body.push(new Paragraph({ text: value.replace(/\s+/g, " ").trim(), spacing: { after: 160, line: 360 } }));
     }
   }
-  if (workspace) { body.push(new Paragraph({ text: "References", heading: HeadingLevel.HEADING_1 })); for (const item of formalRendered?.bibliography ?? referencesFor(workspace.works, cited, style)) body.push(new Paragraph({ text: item.text, spacing: { after: 120 } })); }
+  if (formalRendered || workspace) { body.push(new Paragraph({ text: "References", heading: HeadingLevel.HEADING_1 })); for (const item of formalRendered?.bibliography ?? referencesFor(workspace!.works, cited, style)) body.push(new Paragraph({ text: item.text, spacing: { after: 120 } })); }
   const file = new Document({
     creator: "Doctoral Research Portfolio Workbench", title: document.title, subject: watermark || document.documentType,
     sections: [{

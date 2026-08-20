@@ -10,7 +10,7 @@ export async function createClaimEvidenceCitationBinding(input: Omit<ClaimEviden
   const version = getDocumentVersion(input.projectId, input.documentId, input.documentVersionId); if (!version) throw new Error("DocumentVersion 不存在或不属于当前项目文档。");
   const section = version.sections.find((item) => item.sectionId === input.sectionId); if (!section) throw new Error("Binding.sectionId 不存在于指定版本。");
   if (!section.claimIds.includes(input.claimId)) throw new Error("Binding.claimId 不属于指定版本章节。");
-  const coverage = claimCoverageForVersion(input.projectId, input.documentId, input.documentVersionId); if (!coverage || coverage.contentHash !== version.contentHash) throw new Error("指定版本缺少 hash 匹配的 ClaimCoverageReport。");
+  const coverage = claimCoverageForVersion(input.projectId, input.documentId, input.documentVersionId); if (!coverage || (coverage.contentHash !== version.contentHash && version.lifecycleStatus !== "pending_validation")) throw new Error("指定版本缺少 hash 匹配的 ClaimCoverageReport。");
   const sentence = coverage.paragraphs.flatMap((paragraph) => paragraph.sentences).find((item) => item.sentenceId === input.sentenceId); if (!sentence) throw new Error("Binding.sentenceId 不存在于指定版本 Coverage。");
   if (!sentence.claimIds?.includes(input.claimId)) throw new Error("Binding Claim 与 sentence 的 Claim span 不匹配。");
   const citationIndex = sentence.citationItemIds?.indexOf(input.citationItemId) ?? -1; if (citationIndex < 0 || sentence.citationWorkIds[citationIndex] !== input.workId) throw new Error("Binding CitationItem 与 Work 不匹配。");

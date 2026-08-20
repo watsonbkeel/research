@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getProject, projectUpdateSchema, updateProject } from "@/lib/portfolio";
+import { snapshotProjectDocumentsAfterCitationStyleChange } from "@/lib/project-documents";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ projectId: string }> };
@@ -18,7 +19,11 @@ export async function PATCH(request: Request, context: Context) {
     const before = getProject(projectId);
     if (!before) return NextResponse.json({ error: "项目不存在。" }, { status: 404 });
     const project = updateProject(projectId, parsed.data);
-    return NextResponse.json({ project, citationStyleChanged: before.citationStyle !== project.citationStyle });
+    const citationStyleChanged = before.citationStyle !== project.citationStyle;
+    const documentVersions = citationStyleChanged
+      ? snapshotProjectDocumentsAfterCitationStyleChange(projectId)
+      : [];
+    return NextResponse.json({ project, citationStyleChanged, documentVersions });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "项目更新失败。" }, { status: 400 });
   }

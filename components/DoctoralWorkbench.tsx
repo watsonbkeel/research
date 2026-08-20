@@ -79,7 +79,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
 
   function selectDocument(id: string) {
     const next = documents.find((item) => item.id === id); if (!next) return;
-    setDocumentId(id); setManuscript(next.manuscript); setSelectedId(next.manuscript.chapters[0]?.sections[0]?.id ?? ""); setVersions([]);
+    setDocumentId(id); setManuscript(next.manuscript); setSelectedId(next.manuscript.chapters[0]?.sections[0]?.id ?? ""); setVersions([]); setFormalGateBlocked(true);
   }
 
   async function createArticle() {
@@ -106,22 +106,28 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
   }
 
   const selected = useMemo(() => manuscript?.chapters.flatMap((chapter) => chapter.sections).find((section) => section.id === selectedId), [manuscript, selectedId]);
+  const currentDocument = documents.find((item) => item.id === documentId);
+  const currentVersionId = currentDocument?.currentVersionId;
+  const formalExportUrl = currentVersionId
+    ? `/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/export?format=docx&formal=1&versionId=${encodeURIComponent(currentVersionId)}`
+    : undefined;
 
   function updateSection(patch: Partial<ManuscriptSection>) {
     if (!selected || !manuscript) return;
     setManuscript({ ...manuscript, chapters: manuscript.chapters.map((chapter) => ({ ...chapter, sections: chapter.sections.map((section) => section.id === selected.id ? { ...section, ...patch } : section) })) });
+    setFormalGateBlocked(true);
   }
 
   async function saveSection(event?: FormEvent) {
     event?.preventDefault();
     if (!manuscript || !selected) return;
     setSaving(true);
-    const currentDocument = documents.find((item) => item.id === documentId);
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ sectionId: selected.id, content: selected.content, changeSummary: "Researcher saved section draft", editor: "researcher", expectedVersion: currentDocument?.currentVersionNumber }) });
     const result = await response.json() as { document?: ProjectDocument; version?: DraftVersion; error?: string };
     setSaving(false);
     if (!response.ok || !result.document) return notify(apiError(result, "章节保存失败"));
     setManuscript(result.document.manuscript); setDocuments((current) => current.map((item) => item.id === documentId ? result.document! : item));
+    setFormalGateBlocked(true);
     await loadVersions(selected.id);
     notify("章节和DraftVersion已保存");
   }
@@ -134,6 +140,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
     setSaving(false);
     if (!response.ok || !result.document) return notify(apiError(result, "稿件元数据保存失败"));
     setManuscript(result.document.manuscript); setDocuments((current) => current.map((item) => item.id === documentId ? result.document! : item));
+    setFormalGateBlocked(true);
     notify("稿件元数据已保存");
   }
 
@@ -145,12 +152,14 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
     setGenerating(false);
     if (!response.ok || !result.document) return notify(apiError(result, "分层稿件生成失败"));
     setManuscript(result.document.manuscript); setDocuments((current) => current.map((item) => item.id === documentId ? result.document! : item));
+    setFormalGateBlocked(true);
     await loadVersions(selected.id);
     notify("分层英文草稿已生成；证据、逻辑和导师审核仍未完成");
   }
 
   async function runReview(type: "citation" | "consistency" | "coverage" | "formal-export-gate") {
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/audits`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type, formal: true }) });
+    if (!currentVersionId) return notify("当前文档没有可审查的不可变版本。");
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/audits`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type, formal: true, versionId: currentVersionId }) });
     const result = await response.json() as { status?: string; allowed?: boolean; blockers?: unknown[]; warnings?: unknown[]; paragraphs?: Array<{ sentences: Array<{ coverageStatus: string }> }>; error?: string };
     if (!response.ok) return notify(apiError(result, "审查失败"));
     if (type === "citation") setAuditStatus((current) => ({ ...current, blockers: result.blockers?.length ?? 0, warnings: result.warnings?.length ?? 0 }));
@@ -168,6 +177,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
     const result = await response.json() as InstitutionProfile & { error?: string };
     if (!response.ok) return notify(apiError(result, "院校配置保存失败"));
     setInstitution(result);
+    setFormalGateBlocked(true);
     notify("院校模板配置已保存");
   }
 
@@ -182,6 +192,8 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
     const result = await response.json() as { document?: ProjectDocument; error?: string };
     if (!response.ok || !result.document) return notify(apiError(result, "版本恢复失败"));
     setManuscript(result.document.manuscript);
+    setDocuments((current) => current.map((item) => item.id === documentId ? result.document! : item));
+    setFormalGateBlocked(true);
     notify("已恢复版本；请再次保存以形成新的审阅记录");
   }
 
@@ -196,7 +208,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
         <p>每个项目可拥有一份开题和多篇独立论文；每次保存都会生成可恢复的 DraftVersion。没有真实数据的论文保持 prospective 标识。</p>
       </header>
       <section className="panel paper-concept-panel"><div className="panel-title"><Sparkles size={17}/><div><h2>论文组合建议</h2><p>按 Study 和假设拆分，确认后才创建稿件。</p></div></div>{concepts.length === 0 ? <button className="button secondary" type="button" onClick={() => void suggestConcepts()}>生成 2–3 篇论文建议</button> : <div className="paper-concept-list">{concepts.map((concept) => <div key={concept.id}><div><strong>{concept.title}</strong><span>{concept.centralQuestion}</span>{concept.overlapWarning && <small>{concept.overlapWarning}</small>}</div>{concept.status === "confirmed" ? <span className="status positive">已创建</span> : <button className="button secondary" type="button" onClick={() => void confirmConcept(concept.id)}>确认创建</button>}</div>)}</div>}</section>
-      <section className="panel document-switcher"><label><span>当前文档</span><select value={documentId} onChange={(event) => selectDocument(event.target.value)}>{documents.map((document) => <option key={document.id} value={document.id}>{document.documentType === "confirmation-proposal" ? "开题" : "论文"} · {document.title}</option>)}</select></label><div><span className={`status ${documents.find((item) => item.id === documentId)?.researchMode === "prospective" ? "warning" : "positive"}`}>研究 {documents.find((item) => item.id === documentId)?.researchMode ?? "prospective"}</span><button className="button secondary" type="button" onClick={() => void setEvidenceMode(documents.find((item) => item.id === documentId)?.evidenceMode === "formal" ? "exploratory" : "formal")}>证据 {documents.find((item) => item.id === documentId)?.evidenceMode ?? "exploratory"}</button><span className="status">全局版本 {documents.find((item) => item.id === documentId)?.currentVersionNumber ?? 0}</span><span className={`status ${auditStatus.blockers ? "warning" : "positive"}`}>audit {auditStatus.blockers}/{auditStatus.warnings}</span><span className={`status ${coverageStatus.unsupported + coverageStatus.unclassified ? "warning" : "positive"}`}>coverage {coverageStatus.total - coverageStatus.unsupported - coverageStatus.unclassified}/{coverageStatus.total}</span>{documents.find((item) => item.id === documentId)?.documentType === "journal-article" && documents.find((item) => item.id === documentId)?.researchMode === "prospective" && <button className="button secondary" type="button" onClick={() => void activateEmpiricalMode()}>转为实证稿</button>}<button className="button secondary" type="button" onClick={() => void runReview("coverage")}>论断覆盖</button><button className="button secondary" type="button" onClick={() => void runReview("citation")}><ShieldCheck size={14}/>引用审查</button><button className="button secondary" type="button" onClick={() => void runReview("consistency")}><Network size={14}/>一致性审查</button><button className="button secondary" type="button" onClick={() => void runReview("formal-export-gate")}>检查正式导出</button><a className="button secondary" href={`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/export?format=docx`}><FileOutput size={14}/>草稿 DOCX</a><a className={`button primary ${formalGateBlocked ? "disabled" : ""}`} aria-disabled={formalGateBlocked} href={formalGateBlocked ? undefined : `/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/export?format=docx&formal=1`}>正式 DOCX</a><button className="button primary" type="button" onClick={() => void createArticle()}><Plus size={14}/>新建论文</button></div></section>
+      <section className="panel document-switcher"><label><span>当前文档</span><select value={documentId} onChange={(event) => selectDocument(event.target.value)}>{documents.map((document) => <option key={document.id} value={document.id}>{document.documentType === "confirmation-proposal" ? "开题" : "论文"} · {document.title}</option>)}</select></label><div><span className={`status ${currentDocument?.researchMode === "prospective" ? "warning" : "positive"}`}>研究 {currentDocument?.researchMode ?? "prospective"}</span><button className="button secondary" type="button" onClick={() => void setEvidenceMode(currentDocument?.evidenceMode === "formal" ? "exploratory" : "formal")}>证据 {currentDocument?.evidenceMode ?? "exploratory"}</button><span className="status">全局版本 {currentDocument?.currentVersionNumber ?? 0}</span><span className="status">正式导出版本：{currentVersionId ?? "无"}</span><span className={`status ${auditStatus.blockers ? "warning" : "positive"}`}>audit {auditStatus.blockers}/{auditStatus.warnings}</span><span className={`status ${coverageStatus.unsupported + coverageStatus.unclassified ? "warning" : "positive"}`}>coverage {coverageStatus.total - coverageStatus.unsupported - coverageStatus.unclassified}/{coverageStatus.total}</span>{currentDocument?.documentType === "journal-article" && currentDocument?.researchMode === "prospective" && <button className="button secondary" type="button" onClick={() => void activateEmpiricalMode()}>转为实证稿</button>}<button className="button secondary" type="button" onClick={() => void runReview("coverage")}>论断覆盖</button><button className="button secondary" type="button" onClick={() => void runReview("citation")}><ShieldCheck size={14}/>引用审查</button><button className="button secondary" type="button" onClick={() => void runReview("consistency")}><Network size={14}/>一致性审查</button><button className="button secondary" type="button" disabled={!currentVersionId} onClick={() => void runReview("formal-export-gate")}>检查正式导出</button><a className="button secondary" href={`/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(documentId)}/export?format=docx`}><FileOutput size={14}/>草稿 DOCX</a><a className={`button primary ${formalGateBlocked || !currentVersionId ? "disabled" : ""}`} aria-disabled={formalGateBlocked || !currentVersionId} href={formalGateBlocked ? undefined : formalExportUrl}>正式 DOCX</a><button className="button primary" type="button" onClick={() => void createArticle()}><Plus size={14}/>新建论文</button></div></section>
       <section className="manuscript-meta panel">
         <div className="manuscript-meta-grid">
           <label><span>输出层级</span><select value={manuscript.documentType} disabled>{Object.entries(documentTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

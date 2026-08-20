@@ -27,9 +27,15 @@ describe("citation style persistence", () => {
 
   it("rejects unsupported citation styles at the project API boundary", async () => {
     const project = fixture();
+    const document = ensureProjectProposal(project.id);
+    const oldVersionId = document.currentVersionId!;
     const invalid = await PATCH(new Request("http://localhost", { method: "PATCH", body: JSON.stringify({ citationStyle: "Harvard" }) }), { params: Promise.resolve({ projectId: project.id }) });
     expect(invalid.status).toBe(400);
     const valid = await PATCH(new Request("http://localhost", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ citationStyle: "GB/T 7714" }) }), { params: Promise.resolve({ projectId: project.id }) });
     expect(valid.status).toBe(200); expect((await valid.json()).citationStyleChanged).toBe(true);
+    const versions = listDocumentVersions(project.id, document.id);
+    expect(versions).toHaveLength(2);
+    expect(versions.find((version) => version.id === oldVersionId)?.citationStyle).toBe("APA 7");
+    expect(versions[0]).toMatchObject({ citationStyle: "GB/T 7714", approvalStatus: "not_reviewed" });
   });
 });

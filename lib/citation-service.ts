@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { Cite } from "@citation-js/core";
 import * as CitationCore from "@citation-js/core";
 import "@citation-js/plugin-csl";
-import type { CitationCluster, CitationProcessorStyle, Work } from "./types";
+import type { CitationCluster, CitationProcessorStyle, CitationStyleName, DocumentVersion, Work } from "./types";
 
 export type CitationStyle = CitationProcessorStyle;
 export type { CitationCluster, CitationItem } from "./types";
@@ -15,6 +15,12 @@ if (!cslConfig.styles.has(GB7714_STYLE)) cslConfig.styles.add(GB7714_STYLE, read
 if (!cslConfig.locales.has("zh-CN")) cslConfig.locales.add("zh-CN", readFileSync(path.join(process.cwd(), "lib/csl/locales-zh-CN.xml"), "utf8"));
 const require = createRequire(import.meta.url);
 const Citeproc = require("citeproc") as { Engine: new (system: { retrieveLocale(locale: string): string; retrieveItem(id: string): Record<string, unknown> }, style: string, locale: string) => { updateItems(ids: string[]): void; processCitationCluster(citation: Record<string, unknown>, citationsPre: Array<[string, number]>, citationsPost: Array<[string, number]>): [unknown, Array<[number, string]>]; makeBibliography(): [{ entry_ids?: string[][] }, string[]] | false } };
+
+export function processorStyleFor(style: CitationStyleName): CitationProcessorStyle {
+  if (style === "GB/T 7714") return "gb7714";
+  if (style === "APA 7") return "apa";
+  throw new Error(`Unsupported citation style: ${String(style)}.`);
+}
 
 function authors(work: Work): Array<{ family?: string; given?: string; literal?: string }> {
   if (work.authorsStructured?.length) return work.authorsStructured.map((author) => ({ family: author.family, given: author.given }));
@@ -61,7 +67,11 @@ export function renderCitationCluster(cluster: Pick<CitationCluster, "id" | "ite
 }
 
 export function renderDocumentCitationClusters(clusters: CitationCluster[], works: Work[], style: CitationStyle = "apa") {
-  const ordered = [...clusters].sort((left, right) => (left.documentOrder ?? Number.MAX_SAFE_INTEGER) - (right.documentOrder ?? Number.MAX_SAFE_INTEGER) || left.position - right.position || left.id.localeCompare(right.id));
+  if (clusters.some((cluster) => cluster.documentOrder == null)) {
+    throw new Error("Formal CitationCluster is missing documentOrder.");
+  }
+  const ordered = [...clusters].sort((left, right) => left.documentOrder! - right.documentOrder! || left.id.localeCompare(right.id));
+  if (ordered.length === 0) return { citations: new Map<string, string>(), bibliography: [] };
   const records = new Map(works.map((work) => [work.id, toCslJson(work) as Record<string, unknown>])); const locale = style === "gb7714" ? "zh-CN" : "en-US"; const template = style === "gb7714" ? GB7714_STYLE : "apa";
   const workIds = [...new Set(ordered.flatMap((cluster) => cluster.items.map((item) => item.workId)))];
   for (const workId of workIds) if (!records.has(workId)) throw new Error(`CitationCluster references unknown Work ${workId}.`);
@@ -76,6 +86,47 @@ export function renderDocumentCitationClusters(clusters: CitationCluster[], work
   const [parameters, entries] = bibliographyResult; const entryIds = parameters.entry_ids ?? workIds.map((id) => [id]);
   const bibliography = entries.map((entry, index) => ({ workId: entryIds[index]?.[0] ?? workIds[index], text: String(entry).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim() }));
   return { citations, bibliography };
+}
+
+export function renderVersionCitations(version: DocumentVersion) {
+  if (!version.citationStyle) throw new Error("DocumentVersion 缺少 citationStyle。");
+  if (!version.works) throw new Error("DocumentVersion 缺少冻结的 Work 快照。");
+  if (!version.citationClusters) throw new Error("DocumentVersion 缺少 CitationCluster。");
+  return renderDocumentCitationClusters(
+    version.citationClusters,
+    version.works,
+    processorStyleFor(version.citationStyle),
+  );
+}
+
+export function renderVersionSectionContent(
+  version: DocumentVersion,
+  sectionId: string,
+  content: string,
+  rendered: ReturnType<typeof renderVersionCitations>,
+) {
+  const clusters = (version.citationClusters ?? [])
+    .filter((cluster) => cluster.sectionId === sectionId)
+    .sort((left, right) =>
+      (left.documentOrder ?? Number.MAX_SAFE_INTEGER) -
+        (right.documentOrder ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id),
+    );
+  const tokenCount = content.match(/\[\[CITE:[^\]]+\]\]/g)?.length ?? 0;
+  if (tokenCount !== clusters.length) {
+    throw new Error(
+      `Section ${sectionId} citation token/cluster count mismatch: ${tokenCount} tokens, ${clusters.length} clusters.`,
+    );
+  }
+
+  let index = 0;
+  const output = content.replace(/\[\[CITE:[^\]]+\]\]/g, () => {
+    const cluster = clusters[index++];
+    const value = cluster ? rendered.citations.get(cluster.id) : undefined;
+    if (!value) throw new Error(`CitationCluster ${cluster?.id ?? "missing"} 未渲染。`);
+    return value;
+  });
+  if (/\[\[CITE:/.test(output)) throw new Error("正式正文中仍有未解析 Citation token。");
+  return output;
 }
 
 export function renderReference(work: Work, style: CitationStyle = "apa", yearSuffix = "", strict = false) {
@@ -97,6 +148,7 @@ export function parseCitationTokens(markdown: string) {
   return [...markdown.matchAll(/\[\[CITE:([^\]]+)\]\]/g)].flatMap((match) => match[1].split(";").map((id) => id.trim()).filter(Boolean));
 }
 
+/** @deprecated Draft/legacy export only. */
 export function renderCitationTokens(markdown: string, works: Work[], citationScopeIds?: string[], style: CitationStyle = "apa") {
   const byId = new Map(works.map((work) => [work.id, work])); const unknown: string[] = []; const cited = new Set<string>();
   const scope = citationScopeIds ?? parseCitationTokens(markdown); const stableNumbers = new Map([...new Set(scope)].map((id, index) => [id, index + 1]));
@@ -117,6 +169,7 @@ export function renderCitationTokens(markdown: string, works: Work[], citationSc
   return { content: rendered, citedWorkIds: [...cited], unknownIds: [...new Set(unknown)], unresolvedTokens: /\[\[CITE:/.test(rendered) };
 }
 
+/** @deprecated Draft/legacy export only. */
 export function referencesFor(workspaceWorks: Work[], citedWorkIds: string[], style: CitationStyle = "apa") {
   const byId = new Map(workspaceWorks.map((work) => [work.id, work]));
   const suffixes = citationYearSuffixes(workspaceWorks, citedWorkIds);

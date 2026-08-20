@@ -38,18 +38,52 @@ function snapshotCitationData(document: ProjectDocument) {
   const citationItems: NonNullable<DocumentVersion["citationItems"]> = [];
   const citationClusters: NonNullable<DocumentVersion["citationClusters"]> = [];
   let paragraphNumber = 0;
-  for (const section of document.manuscript.chapters.flatMap((chapter) => chapter.sections)) {
+  let documentOrder = 0;
+  const chapters = [...document.manuscript.chapters].sort((left, right) => left.order - right.order);
+  for (const chapter of chapters) {
+    const sections = [...chapter.sections].sort((left, right) => left.order - right.order);
+    for (const section of sections) {
     let sectionCursor = 0;
     for (const raw of section.content.split(/\n\s*\n/u)) {
       const leading = section.content.indexOf(raw, sectionCursor); if (leading < 0 || !raw.trim()) { sectionCursor += raw.length + 2; continue; } sectionCursor = leading + raw.length; paragraphNumber += 1;
       const paragraphId = `${section.id}-p${paragraphNumber}`; let citationNumber = 0;
       for (const match of raw.matchAll(/\[\[CITE:([^\]]+)\]\]/g)) {
         const workIds = (match[1] ?? "").split(";").map((item) => item.trim()).filter(Boolean); const items = workIds.map((workId, index) => ({ id: `${paragraphId}-citation-${citationNumber + index + 1}`, workId })); citationNumber += items.length;
-        citationItems.push(...items); citationClusters.push({ id: `${paragraphId}-cluster-${citationClusters.length + 1}`, sectionId: section.id, sentenceId: "", documentOrder: citationClusters.length + 1, position: leading + (match.index ?? 0), mode: "parenthetical", items });
+        documentOrder += 1;
+        citationItems.push(...items); citationClusters.push({ id: `${paragraphId}-cluster-${documentOrder}`, sectionId: section.id, sentenceId: "", documentOrder, position: leading + (match.index ?? 0), mode: "parenthetical", items });
       }
+    }
     }
   }
   return { citationItems, citationClusters };
+}
+
+export function hydrateCitationItemsFromBindings(version: DocumentVersion): DocumentVersion {
+  const hydrated = structuredClone(version);
+  const items = new Map((hydrated.citationItems ?? []).map((item) => [item.id, item]));
+  const excerpts = new Map(
+    (hydrated.evidenceExcerptsSnapshot ?? []).flatMap((value) => {
+      if (!value || typeof value !== "object" || !("id" in value)) return [];
+      return [[String(value.id), value as { id: string; workId?: string; page?: string; locator?: string }]] as const;
+    }),
+  );
+
+  for (const binding of hydrated.claimEvidenceCitationBindings ?? []) {
+    const item = items.get(binding.citationItemId);
+    const excerpt = excerpts.get(binding.evidenceExcerptId);
+    if (!item || item.workId !== binding.workId || !excerpt || excerpt.workId !== binding.workId) continue;
+    if (item.locator) continue;
+    const locator = excerpt.page ?? excerpt.locator;
+    if (!locator) continue;
+    item.locatorType = "page";
+    item.locator = locator;
+  }
+
+  for (const cluster of hydrated.citationClusters ?? []) {
+    cluster.items = cluster.items.map((item) => items.get(item.id) ?? item);
+  }
+  hydrated.citationItems = [...items.values()];
+  return hydrated;
 }
 
 function buildDocumentVersion(projectId: string, document: ProjectDocument, input: { id: string; versionNumber: number; parentVersionId?: string; createdBy: string; createdAt: string; lifecycleStatus?: DocumentVersion["lifecycleStatus"]; idempotencyKey?: string }) {
@@ -200,10 +234,13 @@ export function assertProspectiveIntegrity(section: Pick<ManuscriptSection, "tit
 }
 
 export function contentHash(value: string) { return createHash("sha256").update(value).digest("hex"); }
-export function documentVersionContentHash(version: DocumentVersion) { return contentHash(JSON.stringify({ title: version.title, researchMode: version.researchMode, evidenceMode: version.evidenceMode, targetVenue: version.targetVenue, citationStyle: version.citationStyle, sections: version.sections.map((section) => ({ sectionId: section.sectionId, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps })) })); }
+export function documentVersionContentHash(version: DocumentVersion) { return contentHash(JSON.stringify({ title: version.title, researchMode: version.researchMode, evidenceMode: version.evidenceMode, targetVenue: version.targetVenue, citationStyle: version.citationStyle, sections: version.sections.map((section) => ({ sectionId: section.sectionId, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps })), citationItems: version.citationItems ?? [], citationClusters: version.citationClusters ?? [] })); }
 export function documentVersionEvidenceBindingHash(version: DocumentVersion) { return contentHash(JSON.stringify({ bindings: version.claimEvidenceCitationBindings ?? [], evidence: version.evidenceReferences ?? [] })); }
 export function documentVersionProposalInputHash(version: DocumentVersion) { return contentHash(JSON.stringify({ workspace: version.workspaceSnapshot, researchPlan: version.researchPlanSnapshot, institution: version.institutionProfileSnapshot, citationStyle: version.citationStyle })); }
-export function projectDocumentContentHash(document: ProjectDocument) { return documentVersionContentHash({ id: "hash", projectId: document.projectId, documentId: document.id, versionNumber: document.currentVersionNumber, title: document.title, researchMode: document.researchMode, evidenceMode: document.evidenceMode, targetVenue: document.targetVenue, citationStyle: document.versionSnapshot?.citationStyle ?? "APA 7", sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, citationItemIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), approvalStatus: "not_reviewed", createdBy: "hash", createdAt: "" }); }
+export function projectDocumentContentHash(document: ProjectDocument) {
+  if (document.versionSnapshot) return documentVersionContentHash(document.versionSnapshot);
+  return documentVersionContentHash({ id: "hash", projectId: document.projectId, documentId: document.id, versionNumber: document.currentVersionNumber, title: document.title, researchMode: document.researchMode, evidenceMode: document.evidenceMode, targetVenue: document.targetVenue, citationStyle: "APA 7", sections: document.manuscript.chapters.flatMap((chapter) => chapter.sections).map((section) => ({ sectionId: section.id, chapterId: section.chapterId, title: section.title, order: section.order, content: section.content, claimIds: section.claimIds, citationIds: section.citationIds, citationItemIds: section.citationIds, evidenceExcerptIds: section.evidenceExcerptIds, evidenceBundleId: section.evidenceBundleId, unsupportedStatements: section.unsupportedStatements, evidenceGaps: section.evidenceGaps, contentHash: contentHash(section.content) })), approvalStatus: "not_reviewed", createdBy: "hash", createdAt: "" });
+}
 
 export function documentForVersion(current: ProjectDocument, versionId: string): ProjectDocument | undefined {
   const version = listDocumentVersions(current.projectId, current.id).find((item) => item.id === versionId); if (!version) return undefined;
@@ -281,19 +318,36 @@ export function formalExportSnapshot(projectId: string, documentId: string, vers
   return { version, workspace: structuredClone(version.workspaceSnapshot) as WorkspaceData, researchPlan: structuredClone(version.researchPlanSnapshot) as ResearchPlanState, institution: structuredClone(version.institutionProfileSnapshot) as InstitutionProfile, evidence: structuredClone(version.evidenceExcerptsSnapshot ?? []) as EvidenceExcerpt[], citationStyle: version.citationStyle ?? "APA 7" };
 }
 
+export function snapshotProjectDocumentsAfterCitationStyleChange(projectId: string, editor = "researcher") {
+  return listProjectDocuments(projectId).map((document) => {
+    const saved = saveProjectDocument(projectId, document.id, document.manuscript, {
+      expectedVersion: document.currentVersionNumber,
+      editor,
+    });
+    return getDocumentVersion(projectId, document.id, saved.currentVersionId!)!;
+  });
+}
+
 export function refreshDocumentVersionEvidenceSnapshot(projectId: string, documentId: string, versionId: string) {
   const db = portfolioDatabase(); const version = getDocumentVersion(projectId, documentId, versionId); if (!version) throw new Error("DocumentVersion 不存在。");
   const bindings = db.prepare("SELECT id,project_id AS projectId,document_id AS documentId,document_version_id AS documentVersionId,section_id AS sectionId,sentence_id AS sentenceId,claim_id AS claimId,evidence_excerpt_id AS evidenceExcerptId,work_id AS workId,citation_item_id AS citationItemId,relation,created_at AS createdAt FROM claim_evidence_citation_bindings WHERE project_id=? AND document_id=? AND document_version_id=? ORDER BY created_at,id").all(projectId, documentId, versionId) as unknown as NonNullable<DocumentVersion["claimEvidenceCitationBindings"]>;
-  version.claimEvidenceCitationBindings = bindings; version.evidenceBindingHash = documentVersionEvidenceBindingHash(version);
-  db.prepare("UPDATE document_snapshots SET payload_json=? WHERE id=? AND project_id=? AND document_id=?").run(JSON.stringify(version), versionId, projectId, documentId);
+  version.claimEvidenceCitationBindings = bindings;
+  const hydrated = hydrateCitationItemsFromBindings(version);
+  hydrated.contentHash = documentVersionContentHash(hydrated);
+  hydrated.evidenceBindingHash = documentVersionEvidenceBindingHash(hydrated);
+  hydrated.proposalInputHash = documentVersionProposalInputHash(hydrated);
+  db.prepare("UPDATE document_snapshots SET payload_json=? WHERE id=? AND project_id=? AND document_id=?").run(JSON.stringify(hydrated), versionId, projectId, documentId);
   db.prepare("DELETE FROM document_approvals WHERE project_id=? AND document_id=? AND document_version_id=?").run(projectId, documentId, versionId);
-  return version;
+  return hydrated;
 }
 
 export function updateDocumentVersionCitationLocations(projectId: string, documentId: string, versionId: string, sentences: Array<{ sentenceId: string; citationItemIds?: string[] }>) {
   const db = portfolioDatabase(); const version = getDocumentVersion(projectId, documentId, versionId); if (!version) throw new Error("DocumentVersion 不存在。");
   for (const cluster of version.citationClusters ?? []) { const sentence = sentences.find((item) => cluster.items.some((citation) => item.citationItemIds?.includes(citation.id))); if (sentence) cluster.sentenceId = sentence.sentenceId; }
-  db.prepare("UPDATE document_snapshots SET payload_json=? WHERE id=? AND project_id=? AND document_id=?").run(JSON.stringify(version), versionId, projectId, documentId); return version;
+  version.contentHash = documentVersionContentHash(version);
+  db.prepare("UPDATE document_snapshots SET payload_json=? WHERE id=? AND project_id=? AND document_id=?").run(JSON.stringify(version), versionId, projectId, documentId);
+  db.prepare("DELETE FROM document_approvals WHERE project_id=? AND document_id=? AND document_version_id=?").run(projectId, documentId, versionId);
+  return version;
 }
 
 export function stageProjectSectionVersion(input: { projectId: string; documentId: string; sectionId: string; content: string; editor: string; generatedBy?: string; citationIds: string[]; claimIds: string[]; evidenceExcerptIds: string[]; evidenceBundleId?: string; unsupportedStatements: Array<{ statement: string; reason: string }>; evidenceGaps: string[]; expectedVersion?: number; idempotencyKey: string }) {

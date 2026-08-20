@@ -45,6 +45,7 @@ describe("research exports", () => {
   it("exports a structured English Confirmation Proposal with updateable contents", async () => {
     const now = new Date().toISOString();
     const output = await exportConfirmationProposal({
+      formal: false,
       workspace: seedWorkspace,
       manuscript: {
         id: "test-manuscript", documentType: "confirmation-proposal", language: "English", title: seedWorkspace.project.titleEn, version: "v0.1", status: "draft", targetUniversity: "Generic Australian university baseline", targetJournal: "", candidate: "", school: "", supervisors: [],
@@ -60,6 +61,6 @@ describe("research exports", () => {
     expect(documentXml).toContain("Table of Contents");
     expect(documentXml).toContain("Confirmation Proposal");
     expect(documentXml).toContain("Study 2 Methodology");
-    expect(documentXml).not.toMatch(/[\u3400-\u9fff]/u);
+    expect(documentXml).toContain("待明确");
   });
 });

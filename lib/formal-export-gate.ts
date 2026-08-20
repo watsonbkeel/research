@@ -7,6 +7,23 @@ import { runCitationAudit } from "./citation-audit";
 import { claimCoverageForVersion } from "./claim-coverage";
 import type { ExportAuditManifest, FormalExportGateResult } from "./types";
 import { qualityReportForVersion } from "./quality";
+import { renderVersionCitations, renderVersionSectionContent } from "./citation-service";
+
+function citationRenderBlocker(error: unknown) {
+  const message = error instanceof Error ? error.message : "正式引用渲染失败。";
+  const code = /Unsupported citation style|缺少 citationStyle/i.test(message)
+    ? "citation-style-unsupported"
+    : /documentOrder/i.test(message)
+      ? "citation-cluster-document-order-missing"
+      : /token\/cluster count mismatch/i.test(message)
+        ? "citation-token-cluster-mismatch"
+        : /Work 快照|unknown Work/i.test(message)
+          ? "citation-work-snapshot-missing"
+          : /未解析 Citation token/i.test(message)
+            ? "unresolved-citation-token"
+            : "citation-render-failed";
+  return { code, message };
+}
 
 export async function checkFormalExportGate(input: { projectId: string; documentId: string; versionId?: string }): Promise<FormalExportGateResult & { manifest?: ExportAuditManifest }> {
   const project = getProject(input.projectId); const document = getProjectDocument(input.projectId, input.documentId);
@@ -19,9 +36,17 @@ export async function checkFormalExportGate(input: { projectId: string; document
   if (snapshot && snapshot.contentHash && documentVersionContentHash(snapshot) !== snapshot.contentHash) blockers.push({ code: "version-hash-invalid", message: "指定文档版本快照的 contentHash 校验失败。" });
   if (snapshot) {
     if (snapshot.lifecycleStatus !== "reviewable") blockers.push({ code: "version-not-reviewable", message: "指定文档版本尚未通过持久化复审，不能正式导出。" });
-    if ((snapshot.citationClusters ?? []).some((cluster) => cluster.documentOrder === undefined)) blockers.push({ code: "citation-document-order-missing", message: "正式版本的 CitationCluster 缺少整文档 documentOrder。" });
+    if ((snapshot.citationClusters ?? []).some((cluster) => cluster.documentOrder === undefined)) blockers.push({ code: "citation-cluster-document-order-missing", message: "正式版本的 CitationCluster 缺少整文档 documentOrder。" });
     if (snapshot.evidenceBindingHash !== documentVersionEvidenceBindingHash(snapshot)) blockers.push({ code: "evidence-binding-hash-invalid", message: "指定文档版本冻结的证据链 hash 校验失败。" });
     if (snapshot.proposalInputHash !== documentVersionProposalInputHash(snapshot)) blockers.push({ code: "proposal-input-hash-invalid", message: "指定文档版本冻结的开题输入 hash 校验失败。" });
+    try {
+      const rendered = renderVersionCitations(snapshot);
+      for (const section of snapshot.sections) {
+        renderVersionSectionContent(snapshot, section.sectionId, section.content, rendered);
+      }
+    } catch (error) {
+      blockers.push(citationRenderBlocker(error));
+    }
   }
   const reviewedDocument = versionDocument ?? document;
   const workspace = snapshot?.workspaceSnapshot ?? await readWorkspace(input.projectId); const excerpts = snapshot?.evidenceExcerptsSnapshot as Awaited<ReturnType<typeof listEvidenceExcerpts>> | undefined ?? await listEvidenceExcerpts({ projectId: input.projectId }); const candidates = listCandidateRecords(input.projectId);

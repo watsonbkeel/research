@@ -13,6 +13,7 @@
 - Workflow 恢复失败测试：`c1eddc5` (`test: expose orphan assistant workflow recovery gaps`)
 - Workflow 恢复修复：`2c17cc6` (`fix: recover orphan assistant workflow runs`)
 - 专用 Proposal E2E 加固：`ce04b1a` (`test: exercise versioned formal proposal export path`)
+- 实现与验证收口提交：`a01f5ef371a0996bd8fe3acd1556b171c63313dd`
 
 ## 2. 修复前失败证据
 
@@ -80,9 +81,7 @@ WorkflowRun 在首次创建时保存 conversation、prompt 和 profile，创建 
 - `npm run test:formal-e2e`：1 file passed；1 test passed；0 failed；约 3.0 秒（最近一次单独运行）。
 - build：Next.js 15.5.23 production build 成功，35/35 static pages generated。
 - `git diff --check`：通过。
-- GitHub Actions：run `32234954595`，提交 `5d2f44a0ca3dcabd1ae65ff1764f2f0234c40002`，结论 `success`；链接：https://github.com/watsonbkeel/research/actions/runs/32234954595 。该 run 执行了 CI workflow 中的 lint、typecheck、全套测试、独立 formal E2E 和 build。
-
-本轮推送前远程 CI 状态：待验证。基线提交 `906b50b` 的 run `32331337983` 为 `success`；本轮最新提交必须在推送后取得新的 GitHub Actions run，不能用该基线 run 代替。
+- GitHub Actions：run `32335650726`，提交 `a01f5ef371a0996bd8fe3acd1556b171c63313dd`，结论 `success`；链接：https://github.com/watsonbkeel/research/actions/runs/32335650726 。该 run 在当前分支真实执行并通过了 `npm ci`、lint、typecheck、27 files / 113 tests 的全套测试、独立 formal E2E、build 和临时数据清理。
 
 测试日志中的 `standardFontDataUrl` 是 pdf.js 解析最小合成 PDF 时的非阻断 warning；PDF 解析、测试和 build 均成功。
 

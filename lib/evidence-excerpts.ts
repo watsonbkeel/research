@@ -106,6 +106,7 @@ function readExcerpts(projectId?: string): EvidenceExcerpt[] {
     return {
       ...item,
       projectId: item.projectId ?? projectId,
+      locatorType: item.page ? "page" : item.locatorType,
       reviewedAt,
       reviewDate: item.reviewDate ?? reviewedAt,
       verificationStatus: projectId && item.verificationStatus === "claim_verified" && (!item.reviewer || !reviewedAt) ? "ai_suggested" : item.verificationStatus,

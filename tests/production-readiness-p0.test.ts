@@ -104,7 +104,7 @@ describe("P0 production readiness", () => {
   it("blocks blank or exploratory documents at the unified formal export gate", async () => {
     const { project, document } = fixture(); setProjectDocumentEvidenceMode(project.id, document.id, "exploratory");
     const gate = await checkFormalExportGate({ projectId: project.id, documentId: document.id });
-    expect(gate.allowed).toBe(false); expect(gate.blockers.some((item) => item.code === "evidence-mode-not-formal")).toBe(true); expect(gate.blockers.some((item) => item.code === "required-section-empty")).toBe(true);
+    expect(gate.allowed).toBe(false); expect(gate.blockers.some((item) => item.code === "evidence-mode-not-formal")).toBe(true); expect(gate.blockers.some((item) => item.code.startsWith("institution-required-section-") || item.code === "institution-profile-missing")).toBe(true);
   });
 
   it("starts an idempotent multi-step chapter repair workflow", () => {

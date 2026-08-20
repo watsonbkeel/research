@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defaultManuscript, manuscriptSchema, type DraftVersion, type Manuscript, type ManuscriptSection } from "./manuscript";
-import { getProject, portfolioDatabase } from "./portfolio";
+import { getProject, portfolioDatabase, updateProject } from "./portfolio";
 import { hasCompletedRealAnalysis } from "./results";
 import { createHash } from "node:crypto";
 import type { DocumentVersion, EvidenceLocatorType, EvidenceMode, ResearchMode } from "./types";
 import { readWorkspaceState } from "./storage";
-import { readInstitutionProfile } from "./institution";
+import { institutionProfileSchema, readInstitutionProfile, saveInstitutionProfile } from "./institution";
 import type { InstitutionProfile } from "./institution";
 import type { ResearchPlanState } from "./research-plan";
 import type { EvidenceExcerpt } from "./evidence-excerpts";
@@ -329,6 +329,30 @@ export function snapshotProjectDocumentsAfterCitationStyleChange(projectId: stri
     });
     return getDocumentVersion(projectId, document.id, saved.currentVersionId!)!;
   });
+}
+
+export function updateProjectCitationStyleAtomically(input: { projectId: string; citationStyle: import("./types").CitationStyleName; editor: string; expectedProjectUpdatedAt?: string; projectPatch?: Parameters<typeof updateProject>[1] }) {
+  const database = portfolioDatabase(); database.exec("BEGIN IMMEDIATE");
+  try {
+    const current = getProject(input.projectId); if (!current) throw new Error("项目不存在。");
+    if (input.expectedProjectUpdatedAt && current.updatedAt !== input.expectedProjectUpdatedAt) throw new Error("项目已被其他用户更新，请刷新后重试。");
+    if (current.citationStyle === input.citationStyle) { database.exec("COMMIT"); return { project: current, documentVersions: [] as DocumentVersion[] }; }
+    const documents = listProjectDocuments(input.projectId);
+    updateProject(input.projectId, { ...input.projectPatch, citationStyle: input.citationStyle }, { allowCitationStyleChange: true });
+    const documentVersions = documents.map((document) => createDocumentSnapshot(input.projectId, document, input.editor));
+    const project = getProject(input.projectId)!; database.exec("COMMIT"); return { project, documentVersions };
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
+}
+
+export function saveInstitutionProfileWithDocumentSnapshots(projectId: string, profileInput: unknown, editor = "researcher") {
+  const profile = institutionProfileSchema.parse(profileInput); const database = portfolioDatabase(); database.exec("BEGIN IMMEDIATE");
+  try {
+    const current = readInstitutionProfile(projectId);
+    if (JSON.stringify(current) === JSON.stringify(profile)) { database.exec("COMMIT"); return { profile: current, documentVersions: [] as DocumentVersion[] }; }
+    const documents = listProjectDocuments(projectId); const saved = saveInstitutionProfile(profile, projectId);
+    const documentVersions = documents.map((document) => createDocumentSnapshot(projectId, document, editor));
+    database.exec("COMMIT"); return { profile: saved, documentVersions };
+  } catch (error) { database.exec("ROLLBACK"); throw error; }
 }
 
 export function refreshDocumentVersionEvidenceSnapshot(projectId: string, documentId: string, versionId: string) {

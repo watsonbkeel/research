@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-type Statement = { get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[]; run(...args: unknown[]): { lastInsertRowid?: number | bigint } };
+type Statement = { get(...args: unknown[]): unknown; all(...args: unknown[]): unknown[]; run(...args: unknown[]): { lastInsertRowid?: number | bigint; changes?: number | bigint } };
 type Db = { exec(sql: string): void; prepare(sql: string): Statement; close(): void };
 type JsonMap = Record<string, unknown>;
 const require = createRequire(import.meta.url);
@@ -31,29 +31,50 @@ export const candidateInputSchema = z.object({ jobId: z.string().min(1), title: 
 export type JobStatus = "queued" | "running" | "paused" | "waiting-confirmation" | "waiting-user" | "completed" | "failed" | "cancelled";
 export type Conversation = { id: string; title: string; projectId?: string; topicBatchId?: string; metadata: Record<string, unknown>; createdAt: string; updatedAt: string };
 export type Message = { id: string; conversationId: string; role: string; content: string; metadata: Record<string, unknown>; createdAt: string };
-export type ResearchJob = { id: string; conversationId?: string; projectId?: string; topicBatchId?: string; candidateId?: string; documentId?: string; parentJobId?: string; prompt: string; kind: string; input: Record<string, unknown>; status: JobStatus; stage?: string; progress: number; profileId?: string | null; profileName?: string | null; leaseOwner?: string; leaseExpiresAt?: string; createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string; error?: string };
+export type ResearchJob = { id: string; conversationId?: string; projectId?: string; topicBatchId?: string; candidateId?: string; documentId?: string; parentJobId?: string; workflowRunId?: string; prompt: string; kind: string; input: Record<string, unknown>; status: JobStatus; stage?: string; progress: number; profileId?: string | null; profileName?: string | null; leaseOwner?: string; leaseExpiresAt?: string; createdAt: string; updatedAt: string; startedAt?: string; completedAt?: string; error?: string };
 
 function database(): Db {
   const file = path.join(process.env.WORKBENCH_DATA_DIR ?? path.join(process.cwd(), ".local"), "workbench.sqlite");
   if (db && dbPath === file) return db;
   db?.close(); mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); db = new DatabaseSync(file); dbPath = file;
-  db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; PRAGMA busy_timeout=5000;
+    CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, metadata TEXT NOT NULL, project_id TEXT, topic_batch_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, metadata TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS assistant_messages_conversation ON assistant_messages(conversation_id, created_at);
-    CREATE TABLE IF NOT EXISTS assistant_jobs (id TEXT PRIMARY KEY, conversation_id TEXT REFERENCES assistant_conversations(id) ON DELETE SET NULL, project_id TEXT, topic_batch_id TEXT, candidate_id TEXT, document_id TEXT, parent_job_id TEXT, prompt TEXT NOT NULL, kind TEXT NOT NULL, input TEXT NOT NULL, status TEXT NOT NULL, lease_owner TEXT, lease_expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, error TEXT);
+    CREATE TABLE IF NOT EXISTS assistant_jobs (id TEXT PRIMARY KEY, conversation_id TEXT REFERENCES assistant_conversations(id) ON DELETE SET NULL, project_id TEXT, topic_batch_id TEXT, candidate_id TEXT, document_id TEXT, parent_job_id TEXT, workflow_run_id TEXT, prompt TEXT NOT NULL, kind TEXT NOT NULL, input TEXT NOT NULL, status TEXT NOT NULL, lease_owner TEXT, lease_expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, error TEXT);
     CREATE INDEX IF NOT EXISTS assistant_jobs_status ON assistant_jobs(status, created_at);
     CREATE TABLE IF NOT EXISTS assistant_job_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES assistant_jobs(id) ON DELETE CASCADE, type TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_artifacts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES assistant_jobs(id) ON DELETE CASCADE, project_id TEXT, document_id TEXT, type TEXT NOT NULL, title TEXT, content TEXT NOT NULL, metadata TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS assistant_candidates (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES assistant_jobs(id) ON DELETE CASCADE, project_id TEXT, topic_candidate_id TEXT, title TEXT NOT NULL, url TEXT, source TEXT, abstract TEXT, metadata TEXT NOT NULL, created_at TEXT NOT NULL);`);
   const add = (table: string, column: string) => { const columns = db!.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>; if (!columns.some((item) => item.name === column)) db!.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`); };
-  for (const [table, columns] of [["assistant_conversations", ["project_id", "topic_batch_id"]], ["assistant_jobs", ["project_id", "topic_batch_id", "candidate_id", "document_id", "parent_job_id"]], ["assistant_artifacts", ["project_id", "document_id"]], ["assistant_candidates", ["project_id", "topic_candidate_id"]]] as const) for (const column of columns) add(table, column);
+  for (const [table, columns] of [["assistant_conversations", ["project_id", "topic_batch_id"]], ["assistant_jobs", ["project_id", "topic_batch_id", "candidate_id", "document_id", "parent_job_id", "workflow_run_id"]], ["assistant_artifacts", ["project_id", "document_id"]], ["assistant_candidates", ["project_id", "topic_candidate_id"]]] as const) for (const column of columns) add(table, column);
+  const jobRows = db.prepare("SELECT id,input,workflow_run_id AS workflowRunId FROM assistant_jobs").all() as Array<{ id: string; input: string; workflowRunId?: string }>;
+  for (const row of jobRows) {
+    const input = parse<JsonMap>(row.input, {}); const workflowRunId = typeof input.workflowRunId === "string" ? input.workflowRunId : undefined;
+    if (!row.workflowRunId && workflowRunId) db.prepare("UPDATE assistant_jobs SET workflow_run_id=? WHERE id=?").run(workflowRunId, row.id);
+  }
+  const duplicates = db.prepare("SELECT workflow_run_id AS workflowRunId FROM assistant_jobs WHERE workflow_run_id IS NOT NULL AND status IN ('queued','running','paused') GROUP BY workflow_run_id HAVING COUNT(*) > 1").all() as Array<{ workflowRunId: string }>;
+  for (const duplicate of duplicates) {
+    const jobs = db.prepare("SELECT id FROM assistant_jobs WHERE workflow_run_id=? AND status IN ('queued','running','paused') ORDER BY created_at,id").all(duplicate.workflowRunId) as Array<{ id: string }>;
+    for (const redundant of jobs.slice(1)) {
+      const timestamp = now();
+      db.prepare("UPDATE assistant_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,completed_at=?,updated_at=?,error=? WHERE id=?").run(timestamp, timestamp, "Migration cancelled duplicate active WorkflowRun job; manual review recommended.", redundant.id);
+      db.prepare("INSERT INTO assistant_job_events (job_id,type,payload,created_at) VALUES (?,?,?,?)").run(redundant.id, "migration-duplicate-cancelled", json({ workflowRunId: duplicate.workflowRunId }), timestamp);
+    }
+  }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_assistant_jobs_one_active_per_workflow ON assistant_jobs(workflow_run_id) WHERE workflow_run_id IS NOT NULL AND status IN ('queued','running','paused')");
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (id,applied_at) VALUES (?,?)").run("assistant-workflow-active-job-v1", now());
   return db;
 }
 const json = (value: unknown) => JSON.stringify(value ?? {});
 const parse = <T>(value: unknown, fallback: T): T => { try { return value == null ? fallback : JSON.parse(String(value)) as T; } catch { return fallback; } };
 function conversationRow(row: any): Conversation { return { id: row.id, title: row.title, projectId: row.projectId ?? undefined, topicBatchId: row.topicBatchId ?? undefined, metadata: parse(row.metadata, {}), createdAt: row.createdAt, updatedAt: row.updatedAt }; }
-function jobRow(row: any): ResearchJob { const input = parse<JsonMap>(row.input, {}); return { id: row.id, conversationId: row.conversationId ?? undefined, projectId: row.projectId ?? (typeof input.projectId === "string" ? input.projectId : undefined), topicBatchId: row.topicBatchId ?? (typeof input.topicBatchId === "string" ? input.topicBatchId : undefined), candidateId: row.candidateId ?? undefined, documentId: row.documentId ?? (typeof input.documentId === "string" ? input.documentId : undefined), parentJobId: row.parentJobId ?? undefined, prompt: row.prompt, kind: row.kind, input, status: row.status, stage: typeof input.stage === "string" ? input.stage : undefined, progress: typeof input.progress === "number" ? input.progress : 0, profileId: typeof input.profileId === "string" ? input.profileId : null, profileName: typeof input.profileName === "string" ? input.profileName : null, leaseOwner: row.leaseOwner ?? undefined, leaseExpiresAt: row.leaseExpiresAt ?? undefined, createdAt: row.createdAt, updatedAt: row.updatedAt, startedAt: row.startedAt ?? undefined, completedAt: row.completedAt ?? undefined, error: row.error ?? undefined }; }
+function jobRow(row: any): ResearchJob { const input = parse<JsonMap>(row.input, {}); return { id: row.id, conversationId: row.conversationId ?? undefined, projectId: row.projectId ?? (typeof input.projectId === "string" ? input.projectId : undefined), topicBatchId: row.topicBatchId ?? (typeof input.topicBatchId === "string" ? input.topicBatchId : undefined), candidateId: row.candidateId ?? undefined, documentId: row.documentId ?? (typeof input.documentId === "string" ? input.documentId : undefined), parentJobId: row.parentJobId ?? undefined, workflowRunId: row.workflowRunId ?? (typeof input.workflowRunId === "string" ? input.workflowRunId : undefined), prompt: row.prompt, kind: row.kind, input, status: row.status, stage: typeof input.stage === "string" ? input.stage : undefined, progress: typeof input.progress === "number" ? input.progress : 0, profileId: typeof input.profileId === "string" ? input.profileId : null, profileName: typeof input.profileName === "string" ? input.profileName : null, leaseOwner: row.leaseOwner ?? undefined, leaseExpiresAt: row.leaseExpiresAt ?? undefined, createdAt: row.createdAt, updatedAt: row.updatedAt, startedAt: row.startedAt ?? undefined, completedAt: row.completedAt ?? undefined, error: row.error ?? undefined }; }
+
+const jobFields = "id,conversation_id AS conversationId,project_id AS projectId,topic_batch_id AS topicBatchId,candidate_id AS candidateId,document_id AS documentId,parent_job_id AS parentJobId,workflow_run_id AS workflowRunId,prompt,kind,input,status,lease_owner AS leaseOwner,lease_expires_at AS leaseExpiresAt,created_at AS createdAt,updated_at AS updatedAt,started_at AS startedAt,completed_at AS completedAt,error";
+
+export function ensureAssistantJobSchema() { database(); }
 
 export function createConversation(input: z.input<typeof conversationInputSchema> = {}): Conversation { const p = conversationInputSchema.parse(input), t = now(), cid = id(); database().prepare("INSERT INTO assistant_conversations (id,title,metadata,project_id,topic_batch_id,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(cid, p.title ?? "New research conversation", json(p.metadata), p.projectId ?? null, p.topicBatchId ?? null, t, t); return getConversation(cid)!; }
 export function listConversations(projectId?: string): Conversation[] { const rows = projectId ? database().prepare("SELECT id,title,metadata,project_id AS projectId,topic_batch_id AS topicBatchId,created_at AS createdAt,updated_at AS updatedAt FROM assistant_conversations WHERE project_id=? ORDER BY updated_at DESC").all(projectId) : database().prepare("SELECT id,title,metadata,project_id AS projectId,topic_batch_id AS topicBatchId,created_at AS createdAt,updated_at AS updatedAt FROM assistant_conversations ORDER BY updated_at DESC").all(); return rows.map(conversationRow); }
@@ -61,7 +82,7 @@ export function getConversation(conversationId: string): Conversation | undefine
 export function deleteConversation(conversationId: string) { const active = listResearchJobs(conversationId).some((job) => ["queued", "running", "paused", "waiting-user", "waiting-confirmation"].includes(job.status)); if (active) throw new Error("当前对话仍有未结束的后台任务，请先取消任务。"); const result = database().prepare("DELETE FROM assistant_conversations WHERE id=?").run(conversationId); return Number((result as any).changes ?? 0) > 0; }
 export function addMessage(conversationId: string, input: z.input<typeof messageInputSchema>): Message { const p = messageInputSchema.parse(input); if (!getConversation(conversationId)) throw new Error("Conversation not found"); const message = { id: id(), conversationId, role: p.role, content: p.content, metadata: p.metadata ?? {}, createdAt: now() }; database().prepare("INSERT INTO assistant_messages VALUES (?,?,?,?,?,?)").run(message.id, conversationId, message.role, message.content, json(message.metadata), message.createdAt); database().prepare("UPDATE assistant_conversations SET updated_at=? WHERE id=?").run(message.createdAt, conversationId); return message; }
 export function listMessages(conversationId: string): Message[] { return database().prepare("SELECT id,conversation_id AS conversationId,role,content,metadata,created_at AS createdAt FROM assistant_messages WHERE conversation_id=? ORDER BY created_at,id").all(conversationId).map((row: any) => ({ ...row, metadata: parse(row.metadata, {}) })); }
-export function createResearchJob(input: z.input<typeof jobInputSchema>): ResearchJob { const p = jobInputSchema.parse(input), t = now(), jid = id(); const conversation = p.conversationId ? getConversation(p.conversationId) : undefined; if (p.conversationId && !conversation) throw new Error("Conversation not found"); const values = p.input ?? {}; database().prepare("INSERT INTO assistant_jobs (id,conversation_id,project_id,topic_batch_id,candidate_id,document_id,parent_job_id,prompt,kind,input,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(jid, p.conversationId ?? null, typeof values.projectId === "string" ? values.projectId : conversation?.projectId ?? null, typeof values.topicBatchId === "string" ? values.topicBatchId : conversation?.topicBatchId ?? null, typeof values.candidateId === "string" ? values.candidateId : null, typeof values.documentId === "string" ? values.documentId : null, typeof values.parentJobId === "string" ? values.parentJobId : null, p.prompt, p.kind, json(values), "queued", t, t); addJobEvent(jid, "queued", { prompt: p.prompt }); return getResearchJob(jid)!; }
+export function createResearchJob(input: z.input<typeof jobInputSchema>): ResearchJob { const p = jobInputSchema.parse(input), t = now(), jid = id(); const conversation = p.conversationId ? getConversation(p.conversationId) : undefined; if (p.conversationId && !conversation) throw new Error("Conversation not found"); const values = p.input ?? {}; database().prepare("INSERT INTO assistant_jobs (id,conversation_id,project_id,topic_batch_id,candidate_id,document_id,parent_job_id,workflow_run_id,prompt,kind,input,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(jid, p.conversationId ?? null, typeof values.projectId === "string" ? values.projectId : conversation?.projectId ?? null, typeof values.topicBatchId === "string" ? values.topicBatchId : conversation?.topicBatchId ?? null, typeof values.candidateId === "string" ? values.candidateId : null, typeof values.documentId === "string" ? values.documentId : null, typeof values.parentJobId === "string" ? values.parentJobId : null, typeof values.workflowRunId === "string" ? values.workflowRunId : null, p.prompt, p.kind, json(values), "queued", t, t); addJobEvent(jid, "queued", { prompt: p.prompt }); return getResearchJob(jid)!; }
 export function createProposalGenerationJob(sourceJobId: string, prompt?: string): ResearchJob {
   const source = getResearchJob(sourceJobId);
   if (!source?.conversationId) throw new Error("Assessment job or conversation not found");
@@ -79,13 +100,63 @@ export function createProposalGenerationJob(sourceJobId: string, prompt?: string
     },
   });
 }
-export function listResearchJobs(conversationId?: string): ResearchJob[] { const fields = "id,conversation_id AS conversationId,project_id AS projectId,topic_batch_id AS topicBatchId,candidate_id AS candidateId,document_id AS documentId,parent_job_id AS parentJobId,prompt,kind,input,status,lease_owner AS leaseOwner,lease_expires_at AS leaseExpiresAt,created_at AS createdAt,updated_at AS updatedAt,started_at AS startedAt,completed_at AS completedAt,error"; const rows = conversationId ? database().prepare(`SELECT ${fields} FROM assistant_jobs WHERE conversation_id=? ORDER BY created_at DESC`).all(conversationId) : database().prepare(`SELECT ${fields} FROM assistant_jobs ORDER BY created_at DESC`).all(); return rows.map(jobRow); }
-export function getResearchJob(jobId: string): ResearchJob | undefined { const row = database().prepare("SELECT id,conversation_id AS conversationId,project_id AS projectId,topic_batch_id AS topicBatchId,candidate_id AS candidateId,document_id AS documentId,parent_job_id AS parentJobId,prompt,kind,input,status,lease_owner AS leaseOwner,lease_expires_at AS leaseExpiresAt,created_at AS createdAt,updated_at AS updatedAt,started_at AS startedAt,completed_at AS completedAt,error FROM assistant_jobs WHERE id=?").get(jobId); return row ? jobRow(row) : undefined; }
+export function listResearchJobs(conversationId?: string): ResearchJob[] { const rows = conversationId ? database().prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE conversation_id=? ORDER BY created_at DESC`).all(conversationId) : database().prepare(`SELECT ${jobFields} FROM assistant_jobs ORDER BY created_at DESC`).all(); return rows.map(jobRow); }
+export function getResearchJob(jobId: string): ResearchJob | undefined { const row = database().prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE id=?`).get(jobId); return row ? jobRow(row) : undefined; }
 const transitions: Record<JobStatus, JobStatus[]> = { queued: ["running", "cancelled"], running: ["paused", "waiting-confirmation", "waiting-user", "completed", "failed", "cancelled"], paused: ["queued", "cancelled"], "waiting-confirmation": ["running", "cancelled", "completed"], "waiting-user": ["queued", "running", "cancelled", "completed"], completed: [], failed: ["queued"], cancelled: ["queued"] };
 export function transitionJob(jobId: string, status: JobStatus, error?: string): ResearchJob { const current = getResearchJob(jobId); if (!current) throw new Error("Job not found"); if (!transitions[current.status].includes(status)) throw new Error(`Invalid job transition: ${current.status} -> ${status}`); const t = now(); database().prepare("UPDATE assistant_jobs SET status=?,updated_at=?,completed_at=?,error=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?").run(status, t, ["completed", "failed", "cancelled"].includes(status) ? t : null, error ?? null, jobId); addJobEvent(jobId, status, error ? { error } : {}); return getResearchJob(jobId)!; }
 export function addJobEvent(jobId: string, type: string, payload: unknown = {}) { if (!getResearchJob(jobId)) throw new Error("Job not found"); const t = now(); database().prepare("INSERT INTO assistant_job_events (job_id,type,payload,created_at) VALUES (?,?,?,?)").run(jobId, type, json(payload), t); return { id: Number((database().prepare("SELECT last_insert_rowid() AS id").get() as any).id), jobId, type, payload, createdAt: t }; }
 export function listJobEvents(jobId: string, after = 0) { return database().prepare("SELECT id,job_id AS jobId,type,payload,created_at AS createdAt FROM assistant_job_events WHERE job_id=? AND id>? ORDER BY id").all(jobId, after).map((row: any) => ({ ...row, payload: parse(row.payload, {}) })); }
-export function claimNextJob(owner: string, leaseMs = 60_000): ResearchJob | undefined { recoverExpiredJobs(); const d = database(); const row = d.prepare("SELECT id FROM assistant_jobs WHERE status='queued' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY created_at LIMIT 1").get(now()) as { id: string } | undefined; if (!row) return undefined; const t = now(), expiry = new Date(Date.now() + leaseMs).toISOString(); d.prepare("UPDATE assistant_jobs SET status='running',lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? WHERE id=? AND status='queued'").run(owner, expiry, t, t, row.id); addJobEvent(row.id, "running", { owner }); return getResearchJob(row.id); }
+export function claimNextJob(owner: string, leaseMs = 60_000): ResearchJob | undefined {
+  recoverExpiredJobs(); const d = database(); d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare("SELECT id FROM assistant_jobs WHERE status='queued' AND (lease_expires_at IS NULL OR lease_expires_at < ?) ORDER BY created_at,id LIMIT 1").get(now()) as { id: string } | undefined;
+    if (!row) { d.exec("COMMIT"); return undefined; }
+    const timestamp = now(); const expiry = new Date(Date.now() + leaseMs).toISOString();
+    const result = d.prepare("UPDATE assistant_jobs SET status='running',lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=? WHERE id=? AND status='queued'").run(owner, expiry, timestamp, timestamp, row.id);
+    if (Number(result.changes ?? 0) !== 1) { d.exec("COMMIT"); return undefined; }
+    d.prepare("INSERT INTO assistant_job_events (job_id,type,payload,created_at) VALUES (?,?,?,?)").run(row.id, "running", json({ owner }), timestamp);
+    const claimed = d.prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE id=?`).get(row.id); d.exec("COMMIT");
+    return claimed ? jobRow(claimed) : undefined;
+  } catch (error) { d.exec("ROLLBACK"); throw error; }
+}
+
+const automaticallyResumableWorkflowStates = new Set(["planning", "analyzing_section", "extracting_claims", "compiling_claim_coverage", "auditing", "matching_existing_evidence", "searching_candidates", "verifying_metadata", "searching_full_text", "suggesting_excerpts", "drafting_revision", "applying_revision", "reauditing"]);
+
+export function recoverAssistantWorkflowJobAtomically(projectId: string, runId: string): { action: "not-resumable" | "existing" | "requeued" | "created"; job?: ResearchJob } {
+  const d = database(); d.exec("BEGIN IMMEDIATE");
+  try {
+    const row = d.prepare("SELECT state,payload_json AS payload FROM assistant_workflow_runs WHERE project_id=? AND id=?").get(projectId, runId) as { state: string; payload: string } | undefined;
+    if (!row || !automaticallyResumableWorkflowStates.has(row.state)) { d.exec("COMMIT"); return { action: "not-resumable" }; }
+    const run = parse<Record<string, unknown>>(row.payload, {}); const timestamp = now();
+    const active = d.prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE workflow_run_id=? AND status IN ('queued','running','paused') ORDER BY created_at,id LIMIT 1`).get(runId);
+    if (active) {
+      const job = jobRow(active); run.jobId = job.id; run.updatedAt = timestamp;
+      d.prepare("UPDATE assistant_workflow_runs SET payload_json=?,updated_at=? WHERE project_id=? AND id=?").run(json(run), timestamp, projectId, runId); d.exec("COMMIT"); return { action: "existing", job };
+    }
+    const boundJobId = typeof run.jobId === "string" ? run.jobId : undefined;
+    const bound = boundJobId ? d.prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE id=? AND workflow_run_id=?`).get(boundJobId, runId) : undefined;
+    if (bound) {
+      const job = jobRow(bound);
+      if (["failed", "cancelled"].includes(job.status)) {
+        const result = d.prepare("UPDATE assistant_jobs SET status='queued',lease_owner=NULL,lease_expires_at=NULL,completed_at=NULL,error=NULL,updated_at=? WHERE id=? AND workflow_run_id=? AND status IN ('failed','cancelled')").run(timestamp, job.id, runId);
+        if (Number(result.changes ?? 0) === 1) {
+          d.prepare("INSERT INTO assistant_job_events (job_id,type,payload,created_at) VALUES (?,?,?,?)").run(job.id, "queued", json({ resumedWorkflowRunId: runId }), timestamp);
+          run.jobId = job.id; run.updatedAt = timestamp; d.prepare("UPDATE assistant_workflow_runs SET payload_json=?,updated_at=? WHERE project_id=? AND id=?").run(json(run), timestamp, projectId, runId);
+          const requeued = d.prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE id=?`).get(job.id); d.exec("COMMIT"); return { action: "requeued", job: requeued ? jobRow(requeued) : undefined };
+        }
+      }
+    }
+    const conversationId = typeof run.conversationId === "string" && d.prepare("SELECT 1 FROM assistant_conversations WHERE id=?").get(run.conversationId) ? run.conversationId : undefined;
+    const input: JsonMap = { projectId, documentId: run.documentId, workflowRunId: runId, resumedFromWorkflow: true };
+    if (typeof run.sectionId === "string") input.sectionId = run.sectionId;
+    if (typeof run.profileId === "string") input.profileId = run.profileId;
+    const jid = id(); const prompt = typeof run.prompt === "string" ? run.prompt : `Resume assistant workflow ${runId}`; const kind = `assistant-${String(run.intent ?? "workflow")}`;
+    d.prepare("INSERT INTO assistant_jobs (id,conversation_id,project_id,document_id,workflow_run_id,prompt,kind,input,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(jid, conversationId ?? null, projectId, typeof run.documentId === "string" ? run.documentId : null, runId, prompt, kind, json(input), "queued", timestamp, timestamp);
+    d.prepare("INSERT INTO assistant_job_events (job_id,type,payload,created_at) VALUES (?,?,?,?)").run(jid, "queued", json({ prompt, resumedWorkflowRunId: runId }), timestamp);
+    run.jobId = jid; run.updatedAt = timestamp; d.prepare("UPDATE assistant_workflow_runs SET payload_json=?,updated_at=? WHERE project_id=? AND id=?").run(json(run), timestamp, projectId, runId);
+    const created = d.prepare(`SELECT ${jobFields} FROM assistant_jobs WHERE id=?`).get(jid); d.exec("COMMIT"); return { action: "created", job: created ? jobRow(created) : undefined };
+  } catch (error) { d.exec("ROLLBACK"); throw error; }
+}
 export function heartbeatJob(jobId: string, owner: string, leaseMs = 60_000): ResearchJob { const job = getResearchJob(jobId); if (!job || job.status !== "running" || job.leaseOwner !== owner) throw new Error("Job lease not held"); const expiry = new Date(Date.now() + leaseMs).toISOString(); database().prepare("UPDATE assistant_jobs SET lease_expires_at=?,updated_at=? WHERE id=?").run(expiry, now(), jobId); return getResearchJob(jobId)!; }
 export function recoverExpiredJobs(): number { const t = now(); const result = database().prepare("UPDATE assistant_jobs SET status='queued',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?").run(t, t); return Number((result as any).changes ?? 0); }
 export function updateResearchJob(jobId: string, patch: { input?: Record<string, unknown>; error?: string | null }) {

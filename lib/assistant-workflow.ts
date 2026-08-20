@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { ensureEvidenceSchema } from "./evidence-store";
 import { portfolioDatabase } from "./portfolio";
-import { createResearchJob, getResearchJob, transitionJob } from "./assistant";
+import { ensureAssistantJobSchema, recoverAssistantWorkflowJobAtomically } from "./assistant";
 import type { AssistantWorkflowRun } from "./types";
 
 const now = () => new Date().toISOString();
 const parse = <T>(value: unknown, fallback: T): T => { try { return JSON.parse(String(value)) as T; } catch { return fallback; } };
 
 export function startAssistantWorkflow(input: { projectId: string; documentId: string; sectionId?: string; intent: string; idempotencyKey?: string; conversationId?: string; prompt?: string; profileId?: string }) {
-  ensureEvidenceSchema();
+  ensureEvidenceSchema(); ensureAssistantJobSchema();
   if (input.idempotencyKey) {
     const existing = portfolioDatabase().prepare("SELECT payload_json AS payload FROM assistant_workflow_runs WHERE project_id=? AND idempotency_key=? ORDER BY created_at DESC LIMIT 1").get(input.projectId, input.idempotencyKey) as { payload?: string } | undefined;
     if (existing?.payload) return parse<AssistantWorkflowRun>(existing.payload, undefined as never);
@@ -62,30 +62,8 @@ export function recoverResumableAssistantWorkflows(projectId?: string) {
 export function recoverAndRequeueAssistantWorkflows() {
   const recovered: string[] = [];
   for (const run of recoverResumableAssistantWorkflows()) {
-    const job = run.jobId ? getResearchJob(run.jobId) : undefined;
-    if (job && ["queued", "running", "paused", "waiting-confirmation", "waiting-user"].includes(job.status)) continue;
-    if (job && ["failed", "cancelled"].includes(job.status)) {
-      transitionJob(job.id, "queued");
-      recovered.push(run.id);
-      continue;
-    }
-    if (!job || job.status === "completed") {
-      const replacement = createResearchJob({
-        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-        prompt: run.prompt ?? `Resume assistant workflow ${run.id}`,
-        kind: `assistant-${run.intent}`,
-        input: {
-          projectId: run.projectId,
-          documentId: run.documentId,
-          ...(run.sectionId ? { sectionId: run.sectionId } : {}),
-          workflowRunId: run.id,
-          resumedFromWorkflow: true,
-          ...(run.profileId ? { profileId: run.profileId } : {}),
-        },
-      });
-      bindAssistantWorkflowToJob(run.projectId, run.id, replacement.id);
-      recovered.push(run.id);
-    }
+    const result = recoverAssistantWorkflowJobAtomically(run.projectId, run.id);
+    if (["created", "requeued"].includes(result.action)) recovered.push(run.id);
   }
   return recovered;
 }

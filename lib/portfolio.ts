@@ -284,10 +284,11 @@ export function createProject(input: z.input<typeof projectCreateSchema>): Proje
   return getProject(project.id)!;
 }
 
-export function updateProject(projectId: string, patchInput: z.input<typeof projectUpdateSchema>) {
+export function updateProject(projectId: string, patchInput: z.input<typeof projectUpdateSchema>, options: { allowCitationStyleChange?: boolean } = {}) {
   const patch = projectUpdateSchema.parse(patchInput);
   const current = getProject(projectId);
   if (!current) throw new Error("项目不存在。");
+  if (patch.citationStyle && patch.citationStyle !== current.citationStyle && !options.allowCitationStyleChange) throw new Error("citationStyle 必须通过原子版本更新服务修改。");
   const next = { ...current, ...patch, updatedAt: now() };
   db().prepare(`UPDATE projects SET title_en=?,title_zh=?,field=?,context=?,institution=?,primary_outcome=?,secondary_outcome=?,status=?,policy_json=?,citation_style=?,updated_at=? WHERE id=?`)
     .run(next.titleEn, next.titleZh, next.field, next.context, next.institution, next.primaryOutcome, next.secondaryOutcome, next.status, json(next.policy), next.citationStyle, next.updatedAt, projectId);

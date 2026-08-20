@@ -24,6 +24,7 @@ import { PATCH as patchProject } from "@/app/api/projects/[projectId]/route";
 import { saveResearchPlan } from "@/lib/research-plan";
 import type { Claim, StructuredSectionDraft, Work } from "@/lib/types";
 import { createClaimEvidenceCitationBinding } from "@/lib/claim-evidence-binding";
+import { genericAustralianBaseline, saveInstitutionProfile } from "@/lib/institution";
 
 let directory = "";
 afterEach(() => { if (directory) rmSync(directory, { recursive: true, force: true }); delete process.env.WORKBENCH_DATA_DIR; directory = ""; });
@@ -47,6 +48,7 @@ describe("formal doctoral proposal production E2E", () => {
     directory = mkdtempSync(path.join(tmpdir(), "formal-doctoral-e2e-")); process.env.WORKBENCH_DATA_DIR = directory;
     const project = createProject({ titleEn: "Synthetic transparency proposal", titleZh: "虚构透明度开题", field: "Information systems", context: "Synthetic decision task", institution: "Verified Test University", primaryOutcome: "Trust", secondaryOutcome: "Calibration" });
     const otherProject = createProject({ titleEn: "Isolated project", titleZh: "隔离项目", field: "Other", context: "Other", institution: "Other University", primaryOutcome: "Other", secondaryOutcome: "Other" });
+    saveInstitutionProfile({ ...genericAustralianBaseline, id: "verified-test-profile", university: "Verified Test University", requiredSections: [], verificationStatus: "verified", verifiedBy: "Researcher A", verifiedAt: "2026-08-19T00:00:00.000Z", sourceNote: "Synthetic fixture verified by the test researcher." }, project.id);
     let document = ensureProjectProposal(project.id); const initialVersionId = document.currentVersionId!;
     const styleResponse = await patchProject(new Request("http://localhost/api/projects/style", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ citationStyle: "GB/T 7714" }) }), { params: Promise.resolve({ projectId: project.id }) }); expect(styleResponse.status).toBe(200);
     closePortfolioDatabase(); expect(getProject(project.id)?.citationStyle).toBe("GB/T 7714"); document = getProjectDocument(project.id, document.id)!;

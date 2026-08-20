@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createProject, closePortfolioDatabase, getProject, updateProject } from "@/lib/portfolio";
-import { ensureProjectProposal, getProjectDocument, listDocumentVersions, saveProjectDocument } from "@/lib/project-documents";
+import { createProject, closePortfolioDatabase, getProject } from "@/lib/portfolio";
+import { ensureProjectProposal, listDocumentVersions, updateProjectCitationStyleAtomically } from "@/lib/project-documents";
 import { PATCH } from "@/app/api/projects/[projectId]/route";
 
 let directory = "";
@@ -18,8 +18,7 @@ describe("citation style persistence", () => {
   it("persists GB/T across SQLite reopen while preserving old version APA", () => {
     const project = fixture(); expect(project.citationStyle).toBe("APA 7");
     const document = ensureProjectProposal(project.id); const oldVersionId = document.currentVersionId!;
-    updateProject(project.id, { citationStyle: "GB/T 7714" }); expect(getProject(project.id)?.citationStyle).toBe("GB/T 7714");
-    const current = getProjectDocument(project.id, document.id)!; saveProjectDocument(project.id, document.id, current.manuscript, { expectedVersion: current.currentVersionNumber, editor: "researcher" });
+    updateProjectCitationStyleAtomically({ projectId: project.id, citationStyle: "GB/T 7714", editor: "researcher" }); expect(getProject(project.id)?.citationStyle).toBe("GB/T 7714");
     closePortfolioDatabase();
     expect(getProject(project.id)?.citationStyle).toBe("GB/T 7714");
     const versions = listDocumentVersions(project.id, document.id); expect(versions.find((version) => version.id === oldVersionId)?.citationStyle).toBe("APA 7"); expect(versions[0].citationStyle).toBe("GB/T 7714");

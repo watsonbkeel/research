@@ -13,7 +13,7 @@ import { listFullTextAssets, searchLocalFullText } from "../lib/full-text";
 import { createRevisionProposal } from "../lib/evidence-store";
 import { generateStructuredSection, proposeSectionRevision } from "../lib/generation-service";
 import { createEvidenceExcerpt, listEvidenceExcerpts } from "../lib/evidence-excerpts";
-import { advanceAssistantWorkflow, recoverResumableAssistantWorkflows } from "../lib/assistant-workflow";
+import { advanceAssistantWorkflow, recoverAndRequeueAssistantWorkflows } from "../lib/assistant-workflow";
 import { compileClaimCoverage } from "../lib/claim-coverage";
 import { buildSectionEvidenceBundle } from "../lib/evidence-bundle";
 import { checkFormalExportGate } from "../lib/formal-export-gate";
@@ -430,8 +430,9 @@ export async function runResearchWorker(options: WorkerOptions = {}) {
   const leaseMs = options.leaseMs ?? 120_000;
   do {
     recoverExpiredJobs();
+    recoverAndRequeueAssistantWorkflows();
     const job = claimNextJob(owner, leaseMs);
-    if (job) { if (job.projectId) recoverResumableAssistantWorkflows(job.projectId); await processJob(job, owner, leaseMs); }
+    if (job) await processJob(job, owner, leaseMs);
     else if (!options.once) await sleep(options.pollMs ?? 2000);
     else break;
   } while (!options.once);

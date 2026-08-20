@@ -158,7 +158,10 @@ function migrateLegacyData() {
     addColumnIfMissing("assistant_conversations", "project_id", "TEXT");
     addColumnIfMissing("assistant_jobs", "project_id", "TEXT");
     db().prepare("UPDATE assistant_conversations SET project_id=? WHERE project_id IS NULL").run(project.id);
-    db().prepare("UPDATE assistant_jobs SET project_id=? WHERE project_id IS NULL").run(project.id);
+    db().prepare(`UPDATE assistant_jobs SET project_id=?
+      WHERE project_id IS NULL AND conversation_id IN (
+        SELECT id FROM assistant_conversations WHERE project_id=?
+      )`).run(project.id, project.id);
   }
   const manuscript = db().prepare("SELECT value,updated_at FROM app_state WHERE key='manuscript'").get() as { value: string; updated_at: string } | undefined;
   if (manuscript) {

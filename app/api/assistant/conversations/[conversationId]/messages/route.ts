@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { addMessage, conversationMessageInputSchema, createProposalGenerationJob, createResearchJob, getConversation, getResearchJob, listArtifacts, listMessages, listResearchJobs, messageInputSchema, transitionJob } from "@/lib/assistant";
 import { planAssistantIntent, requestsProposalGeneration } from "@/lib/assistant-intent";
 import { getProjectSnapshot, getCurrentDocument, getQualityBlockers } from "@/lib/assistant-tools";
-import { bindAssistantWorkflowJob, startAssistantWorkflow } from "@/lib/assistant-workflow";
+import { bindAssistantWorkflowToJob, startAssistantWorkflow } from "@/lib/assistant-workflow";
 import { getProjectDocument } from "@/lib/project-documents";
 export const runtime = "nodejs";
 type Context = { params: Promise<{ conversationId: string }> };
@@ -39,7 +39,7 @@ export async function POST(request: Request, context: Context) {
       metadata: selectedProfileId ? { profileId: selectedProfileId } : undefined,
     });
     let workflow = plan.intent === "section_revision" && plan.projectId && plan.documentId
-      ? startAssistantWorkflow({ projectId: plan.projectId, documentId: plan.documentId, sectionId: plan.sectionId, intent: plan.intent, idempotencyKey: `${conversationId}:${plan.documentId}:${plan.sectionId ?? "document"}:${orchestration.data.content.slice(0, 120)}` })
+      ? startAssistantWorkflow({ projectId: plan.projectId, documentId: plan.documentId, sectionId: plan.sectionId, intent: plan.intent, idempotencyKey: `${conversationId}:${plan.documentId}:${plan.sectionId ?? "document"}:${orchestration.data.content.slice(0, 120)}`, conversationId, prompt: orchestration.data.content, profileId: selectedProfileId })
       : undefined;
     if (waitingJob && directProposalRequest && previousHasFeasibility) {
       const job = createProposalGenerationJob(waitingJob.id, orchestration.data.content);
@@ -64,7 +64,7 @@ export async function POST(request: Request, context: Context) {
         revisionRound: waitingJob?.stage === "feasibility" ? previousRevisionRound + 1 : previousRevisionRound,
       },
     });
-    if (workflow) workflow = bindAssistantWorkflowJob(conversation.projectId!, workflow.id, { jobId: job.id, conversationId, prompt: orchestration.data.content, profileId: selectedProfileId });
+    if (workflow) workflow = bindAssistantWorkflowToJob(conversation.projectId!, workflow.id, job.id);
     return NextResponse.json({ message, job, workflow }, { status: 202 });
   }
   const parsed = messageInputSchema.safeParse(body);

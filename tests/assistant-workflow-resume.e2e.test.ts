@@ -56,7 +56,7 @@ describe("AssistantWorkflowRun resume regressions", () => {
     expect(workflows.getAssistantWorkflowRun(project.id, run.id)?.state).toBe("verifying_metadata");
   });
 
-  it("creates one replacement Job when a resumable WorkflowRun has lost its Job", () => {
+  it("creates one replacement Job on worker startup when a resumable WorkflowRun has lost its Job", async () => {
     directory = mkdtempSync(path.join(tmpdir(), "workflow-missing-job-")); process.env.WORKBENCH_DATA_DIR = directory;
     const project = createProject({ titleEn: "Missing job recovery", titleZh: "丢失任务恢复", field: "Methods", context: "Fixture", institution: "Verified University", primaryOutcome: "Trust", secondaryOutcome: "Risk" });
     const document = ensureProjectProposal(project.id);
@@ -65,19 +65,17 @@ describe("AssistantWorkflowRun resume regressions", () => {
     workflows.advanceAssistantWorkflow(project.id, run.id, "auditing");
     workflows.bindAssistantWorkflowJob(project.id, run.id, { jobId: "job-that-does-not-exist", conversationId: conversation.id, prompt: "Resume missing workflow" });
 
-    const recover = (workflows as unknown as { recoverAndRequeueAssistantWorkflows?: () => string[] }).recoverAndRequeueAssistantWorkflows;
-    expect(recover).toBeTypeOf("function");
-    expect(recover!()).toContain(run.id);
+    await runResearchWorker({ once: true, workerId: "missing-job-recovery-1" });
     const recovered = workflows.getAssistantWorkflowRun(project.id, run.id)!;
     expect(recovered.id).toBe(run.id);
     expect(recovered.jobId).not.toBe("job-that-does-not-exist");
     expect(getResearchJob(recovered.jobId!)?.input.workflowRunId).toBe(run.id);
     expect(listResearchJobs()).toHaveLength(1);
 
-    expect(recover!()).not.toContain(run.id);
+    await runResearchWorker({ once: true, workerId: "missing-job-recovery-2" });
     expect(listResearchJobs()).toHaveLength(1);
     expect(workflows.getAssistantWorkflowRun(project.id, run.id)?.jobId).toBe(recovered.jobId);
-  });
+  }, 15_000);
 
   it("does not create a replacement Job across a human verification gate", () => {
     directory = mkdtempSync(path.join(tmpdir(), "workflow-human-gate-")); process.env.WORKBENCH_DATA_DIR = directory;

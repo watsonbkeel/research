@@ -12,6 +12,8 @@ export type ClaimEvidenceVerificationStatus = "unverified" | "ai_suggested" | "h
 export type RetractionStatus = "clear" | "corrected" | "retracted" | "unknown";
 export type ResearchMode = "prospective" | "empirical" | "theoretical" | "review";
 export type EvidenceMode = "exploratory" | "formal";
+export type CitationStyleName = "APA 7" | "GB/T 7714";
+export type CitationProcessorStyle = "apa" | "gb7714";
 export type PublicationStatusCheckState = "unchecked" | "checked" | "failed";
 export type PublicationStatus = "clear" | "corrected" | "retracted" | "expression_of_concern" | "unknown";
 
@@ -28,7 +30,7 @@ export interface Project {
   secondaryOutcome: string;
   designLanguage: "中文";
   writingLanguage: "English";
-  citationStyle: "APA 7" | "GB/T 7714";
+  citationStyle: CitationStyleName;
   version: string;
 }
 
@@ -215,7 +217,17 @@ export interface CitationAuditReport {
 export type CoverageClassification = "published_fact" | "researcher_inference" | "planned_hypothesis" | "planned_method" | "literature_definition" | "author_defined_term" | "definition" | "connective" | "heading" | "unknown";
 export interface CitationOffset { citationItemId: string; workId: string; startOffset: number; endOffset: number; locatorType?: string; locator?: string }
 export interface CitationItem { id: string; workId: string; locatorType?: "page" | "chapter" | "section" | "paragraph" | "figure" | "table"; locator?: string; prefix?: string; suffix?: string; suppressAuthor?: boolean }
-export interface CitationCluster { id: string; sectionId: string; sentenceId: string; position: number; mode: "parenthetical" | "narrative"; items: CitationItem[] }
+export interface CitationCluster {
+  id: string;
+  sectionId: string;
+  sentenceId: string;
+  /** Unique, increasing order across the entire document. */
+  documentOrder?: number;
+  /** Character position within the section, used for token replacement. */
+  position: number;
+  mode: "parenthetical" | "narrative";
+  items: CitationItem[];
+}
 export interface ParsedParagraph { paragraphId: string; rawText: string; plainText: string; startOffset: number; endOffset: number; citations: CitationOffset[] }
 export interface SentenceClassificationResult { sentenceId: string; classification: Exclude<CoverageClassification, "definition">; claimSpans: Array<{ text: string; startOffset: number; endOffset: number; suggestedClaimId?: string }>; confidence: number; rationaleCode: string }
 export interface ClaimEvidenceCitationBinding { id: string; projectId: string; documentId: string; documentVersionId: string; sectionId: string; sentenceId: string; claimId: string; evidenceExcerptId: string; workId: string; citationItemId: string; relation: "supports" | "qualifies" | "contradicts" | "background"; createdAt: string }
@@ -252,7 +264,7 @@ export interface DocumentVersion {
   title?: string; researchMode?: string; evidenceMode?: string; targetVenue?: string; institutionProfileId?: string;
   sections: Array<{ sectionId: string; chapterId?: string; title: string; order?: number; content: string; claimIds: string[]; citationIds: string[]; citationItemIds?: string[]; evidenceExcerptIds: string[]; evidenceBundleId?: string; unsupportedStatements: string[] | Array<{ statement: string; reason: string }>; evidenceGaps: string[] | Array<{ description: string; requiredEvidenceType?: string }>; contentHash: string }>;
   claimEvidenceCitationBindings?: ClaimEvidenceCitationBinding[];
-  citationStyle?: "APA 7" | "GB/T 7714";
+  citationStyle: CitationStyleName;
   claims?: Claim[];
   works?: Work[];
   citationItems?: CitationItem[];
@@ -354,6 +366,10 @@ export interface AssistantWorkflowRun {
   state: "planning" | "analyzing_section" | "extracting_claims" | "compiling_claim_coverage" | "auditing" | "matching_existing_evidence" | "searching_candidates" | "verifying_metadata" | "awaiting_full_text" | "suggesting_excerpts" | "awaiting_human_verification" | "drafting_revision" | "awaiting_revision_approval" | "applying_revision" | "reauditing" | "completed" | "blocked" | "failed";
   actions: Array<{ id: string; tool: string; inputSummary: string; outputSummary?: string; status: "pending" | "running" | "completed" | "blocked" | "failed"; createdAt: string; completedAt?: string; error?: string }>;
   idempotencyKey?: string;
+  jobId?: string;
+  conversationId?: string;
+  prompt?: string;
+  profileId?: string;
   createdAt: string;
   updatedAt: string;
 }

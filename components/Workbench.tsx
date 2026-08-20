@@ -46,6 +46,7 @@ import type {
   TaskType,
   WorkspaceData,
   CandidateRecord,
+  CitationStyleName,
   VerificationEvent,
 } from "@/lib/types";
 import { citationCoverage, validateClaims } from "@/lib/validation";
@@ -177,6 +178,18 @@ export function Workbench({
     notify("里程碑状态已保存");
   }
 
+  async function updateCitationStyle(citationStyle: CitationStyleName) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(data.project.id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ citationStyle }),
+    });
+    const result = await response.json() as { project?: WorkspaceData["project"]; error?: string };
+    if (!response.ok || !result.project) { notify(result.error ?? "引用格式更新失败"); return; }
+    setData((current) => ({ ...current, project: result.project! }));
+    notify(`引用格式已改为 ${citationStyle}。旧文档版本保持原格式，新保存的版本使用新格式。`);
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
@@ -232,7 +245,7 @@ export function Workbench({
 
         <main>
           {view === "assistant" && <ResearchAssistant settings={settings} notify={notify} projectId={data.project.id} />}
-          {view === "overview" && <Overview data={data} navigate={navigate} />}
+          {view === "overview" && <Overview data={data} navigate={navigate} onCitationStyleChange={updateCitationStyle} />}
           {view === "confirmation" && <Confirmation data={data} onChange={changeChecklist} />}
           {view === "literature" && <Literature data={data} onData={setData} notify={notify} projectId={data.project.id} />}
           {view === "theory" && <Theory data={data} />}
@@ -256,7 +269,7 @@ export function Workbench({
   );
 }
 
-function Overview({ data, navigate }: { data: WorkspaceData; navigate: (view: View) => void }) {
+function Overview({ data, navigate, onCitationStyleChange }: { data: WorkspaceData; navigate: (view: View) => void; onCitationStyleChange: (style: CitationStyleName) => Promise<void> }) {
   const complete = data.confirmation.filter((item) => item.status === "已满足").length;
   const evidenceReady = data.works.filter((work) => ["全文已阅读", "论断证据已定位"].includes(work.status)).length;
   const issues = validateClaims(data.claims, data.works);
@@ -270,6 +283,7 @@ function Overview({ data, navigate }: { data: WorkspaceData; navigate: (view: Vi
           </div>
           <h1>{data.project.titleZh}</h1>
           <p>{data.project.titleEn}</p>
+          <label className="citation-style-control"><span>正式引用格式</span><select value={data.project.citationStyle} onChange={(event) => void onCitationStyleChange(event.target.value as CitationStyleName)}><option value="APA 7">APA 7</option><option value="GB/T 7714">GB/T 7714—2015（数字制）</option></select><small>引用格式写入新文档版本；旧版本不会随项目设置变化。</small></label>
         </div>
         <StatusBadge>{`${data.project.version} 设计基线`}</StatusBadge>
       </section>

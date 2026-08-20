@@ -4,9 +4,9 @@ import { createRequire } from "node:module";
 import { Cite } from "@citation-js/core";
 import * as CitationCore from "@citation-js/core";
 import "@citation-js/plugin-csl";
-import type { CitationCluster, Work } from "./types";
+import type { CitationCluster, CitationProcessorStyle, Work } from "./types";
 
-export type CitationStyle = "apa" | "gb7714";
+export type CitationStyle = CitationProcessorStyle;
 export type { CitationCluster, CitationItem } from "./types";
 const GB7714_STYLE = "china-national-standard-gb-t-7714-2015-numeric";
 type CslRegister = { has(name: string): boolean; add(name: string, value: string): void; get(name: string): string };
@@ -61,7 +61,7 @@ export function renderCitationCluster(cluster: Pick<CitationCluster, "id" | "ite
 }
 
 export function renderDocumentCitationClusters(clusters: CitationCluster[], works: Work[], style: CitationStyle = "apa") {
-  const ordered = [...clusters].sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
+  const ordered = [...clusters].sort((left, right) => (left.documentOrder ?? Number.MAX_SAFE_INTEGER) - (right.documentOrder ?? Number.MAX_SAFE_INTEGER) || left.position - right.position || left.id.localeCompare(right.id));
   const records = new Map(works.map((work) => [work.id, toCslJson(work) as Record<string, unknown>])); const locale = style === "gb7714" ? "zh-CN" : "en-US"; const template = style === "gb7714" ? GB7714_STYLE : "apa";
   const workIds = [...new Set(ordered.flatMap((cluster) => cluster.items.map((item) => item.workId)))];
   for (const workId of workIds) if (!records.has(workId)) throw new Error(`CitationCluster references unknown Work ${workId}.`);

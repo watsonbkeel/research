@@ -22,6 +22,13 @@ export function getAssistantWorkflowRun(projectId: string, runId: string) {
   return row?.payload ? parse<AssistantWorkflowRun>(row.payload, undefined as never) : undefined;
 }
 
+export function bindAssistantWorkflowJob(projectId: string, runId: string, input: { jobId: string; conversationId?: string; prompt?: string; profileId?: string }) {
+  const run = getAssistantWorkflowRun(projectId, runId); if (!run) throw new Error("WorkflowRun不存在。");
+  const updated: AssistantWorkflowRun = { ...run, ...input, updatedAt: now() };
+  portfolioDatabase().prepare("UPDATE assistant_workflow_runs SET payload_json=?,updated_at=? WHERE project_id=? AND id=?").run(JSON.stringify(updated), updated.updatedAt, projectId, runId);
+  return updated;
+}
+
 export function advanceAssistantWorkflow(projectId: string, runId: string, state: AssistantWorkflowRun["state"], action?: Omit<AssistantWorkflowRun["actions"][number], "id" | "createdAt">) {
   const run = getAssistantWorkflowRun(projectId, runId); if (!run) throw new Error("WorkflowRun不存在。"); const timestamp = now();
   if (action) run.actions.push({ ...action, id: `workflow-action-${randomUUID()}`, createdAt: timestamp });

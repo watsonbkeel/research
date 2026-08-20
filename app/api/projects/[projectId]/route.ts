@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getProject, updateProject } from "@/lib/portfolio";
+import { getProject, projectUpdateSchema, updateProject } from "@/lib/portfolio";
 
 export const runtime = "nodejs";
 type Context = { params: Promise<{ projectId: string }> };
@@ -13,8 +13,12 @@ export async function GET(_request: Request, context: Context) {
 export async function PATCH(request: Request, context: Context) {
   const { projectId } = await context.params;
   try {
-    const body = await request.json();
-    return NextResponse.json({ project: updateProject(projectId, body) });
+    const parsed = projectUpdateSchema.safeParse(await request.json().catch(() => ({})));
+    if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message ?? "项目更新参数无效。" }, { status: 400 });
+    const before = getProject(projectId);
+    if (!before) return NextResponse.json({ error: "项目不存在。" }, { status: 404 });
+    const project = updateProject(projectId, parsed.data);
+    return NextResponse.json({ project, citationStyleChanged: before.citationStyle !== project.citationStyle });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "项目更新失败。" }, { status: 400 });
   }

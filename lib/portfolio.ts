@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { z } from "zod";
 import { seedWorkspace } from "@/data/seed";
-import type { Project, WorkspaceData, Work } from "./types";
+import type { CitationStyleName, Project, WorkspaceData, Work } from "./types";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
@@ -50,6 +50,8 @@ export interface ProjectRecord extends Project {
   updatedAt: string;
 }
 
+export const citationStyleSchema: z.ZodType<CitationStyleName> = z.enum(["APA 7", "GB/T 7714"]);
+
 export const projectCreateSchema = z.object({
   titleEn: z.string().trim().min(3).max(1000),
   titleZh: z.string().trim().min(1).max(1000),
@@ -58,7 +60,26 @@ export const projectCreateSchema = z.object({
   institution: z.string().max(300).default("待指定澳大利亚大学"),
   primaryOutcome: z.string().max(500).default("待明确"),
   secondaryOutcome: z.string().max(500).default("待明确"),
+  citationStyle: citationStyleSchema.default("APA 7"),
   sourceCandidateId: z.string().max(120).optional(),
+}).strict();
+
+export const projectUpdateSchema = z.object({
+  titleEn: z.string().trim().min(3).max(1000).optional(),
+  titleZh: z.string().trim().min(1).max(1000).optional(),
+  field: z.string().trim().min(1).max(300).optional(),
+  context: z.string().max(2000).optional(),
+  institution: z.string().max(300).optional(),
+  primaryOutcome: z.string().max(500).optional(),
+  secondaryOutcome: z.string().max(500).optional(),
+  citationStyle: citationStyleSchema.optional(),
+  status: z.enum(["active", "archived"]).optional(),
+  policy: z.object({
+    lockedDesignStatements: z.array(z.string()),
+    outcomeInterpretation: z.string(),
+    forbiddenClaims: z.array(z.string()),
+    resultsPolicy: z.literal("real-analysis-required"),
+  }).optional(),
 }).strict();
 
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
@@ -82,7 +103,7 @@ function rowToProject(row: Record<string, unknown>): ProjectRecord {
     id: String(row.id), slug: String(row.slug), titleEn: String(row.titleEn), titleZh: String(row.titleZh),
     field: String(row.field), context: String(row.context), institution: String(row.institution),
     primaryOutcome: String(row.primaryOutcome), secondaryOutcome: String(row.secondaryOutcome),
-    designLanguage: "中文", writingLanguage: "English", citationStyle: "APA 7", version: String(row.version),
+    designLanguage: "中文", writingLanguage: "English", citationStyle: row.citationStyle === "GB/T 7714" ? "GB/T 7714" : "APA 7", version: String(row.version),
     status: row.status as ProjectStatus, sourceCandidateId: row.sourceCandidateId ? String(row.sourceCandidateId) : undefined,
     policy: parse<ProjectPolicy>(row.policyJson, defaultPolicy(row as unknown as Project)),
     createdAt: String(row.createdAt), updatedAt: String(row.updatedAt),
@@ -120,10 +141,12 @@ function migrateLegacyData() {
   const legacyRow = db().prepare("SELECT value FROM app_state WHERE key='workspace'").get() as { value: string } | undefined;
   const workspace = parse<WorkspaceData>(legacyRow?.value, JSON.parse(JSON.stringify(seedWorkspace)) as WorkspaceData);
   const project = workspace.project;
+  const citationStyle: CitationStyleName = project.citationStyle === "GB/T 7714" ? "GB/T 7714" : "APA 7";
+  workspace.project = { ...project, citationStyle };
   const timestamp = now();
   const policy = defaultPolicy(project);
-  db().prepare(`INSERT INTO projects (id,slug,title_en,title_zh,field,context,institution,primary_outcome,secondary_outcome,version,status,source_candidate_id,policy_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(project.id, slugify(project.titleEn), project.titleEn, project.titleZh, project.field, project.context, project.institution, project.primaryOutcome, project.secondaryOutcome, project.version, "active", null, json(policy), timestamp, timestamp);
+  db().prepare(`INSERT INTO projects (id,slug,title_en,title_zh,field,context,institution,primary_outcome,secondary_outcome,version,status,source_candidate_id,policy_json,citation_style,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(project.id, slugify(project.titleEn), project.titleEn, project.titleZh, project.field, project.context, project.institution, project.primaryOutcome, project.secondaryOutcome, project.version, "active", null, json(policy), citationStyle, timestamp, timestamp);
   db().prepare("INSERT INTO project_state (project_id,key,schema_version,value,updated_at) VALUES (?,?,?,?,?)")
     .run(project.id, "workspace", workspace.schemaVersion, json(workspace), timestamp);
   for (const key of ["research_plan", "material_registry", "dataset_registry", "analysis_runs", "review_workflow", "institution_profile", "evidence_excerpts"]) {
@@ -158,7 +181,7 @@ export function ensurePortfolioSchema() {
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,slug TEXT NOT NULL UNIQUE,title_en TEXT NOT NULL,title_zh TEXT NOT NULL,field TEXT NOT NULL,context TEXT NOT NULL,
       institution TEXT NOT NULL,primary_outcome TEXT NOT NULL,secondary_outcome TEXT NOT NULL,version TEXT NOT NULL,status TEXT NOT NULL,
-      source_candidate_id TEXT,policy_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL
+      source_candidate_id TEXT,policy_json TEXT NOT NULL,citation_style TEXT NOT NULL DEFAULT 'APA 7',created_at TEXT NOT NULL,updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS project_state (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,key TEXT NOT NULL,schema_version INTEGER NOT NULL,value TEXT NOT NULL,updated_at TEXT NOT NULL,
@@ -206,6 +229,8 @@ export function ensurePortfolioSchema() {
   addColumnIfMissing("documents", "evidence_mode", "TEXT");
   addColumnIfMissing("documents", "current_version_id", "TEXT");
   addColumnIfMissing("documents", "current_version_number", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing("projects", "citation_style", "TEXT NOT NULL DEFAULT 'APA 7'");
+  db().prepare("UPDATE projects SET citation_style='APA 7' WHERE citation_style IS NULL OR citation_style NOT IN ('APA 7','GB/T 7714')").run();
   db().prepare("UPDATE documents SET research_mode=COALESCE(research_mode,mode),evidence_mode=COALESCE(evidence_mode,'exploratory'),current_version_number=COALESCE(current_version_number,0)").run();
   migrateLegacyData();
   db().prepare("INSERT OR IGNORE INTO schema_migrations (id,applied_at) VALUES (?,?)").run("portfolio-v1", now());
@@ -214,7 +239,7 @@ export function ensurePortfolioSchema() {
 export function listProjects(includeArchived = false): ProjectRecord[] {
   ensurePortfolioSchema();
   const sql = `SELECT id,slug,title_en AS titleEn,title_zh AS titleZh,field,context,institution,primary_outcome AS primaryOutcome,
-    secondary_outcome AS secondaryOutcome,version,status,source_candidate_id AS sourceCandidateId,policy_json AS policyJson,created_at AS createdAt,updated_at AS updatedAt
+    secondary_outcome AS secondaryOutcome,version,status,source_candidate_id AS sourceCandidateId,policy_json AS policyJson,citation_style AS citationStyle,created_at AS createdAt,updated_at AS updatedAt
     FROM projects ${includeArchived ? "" : "WHERE status='active'"} ORDER BY updated_at DESC`;
   return (db().prepare(sql).all() as Array<Record<string, unknown>>).map(rowToProject);
 }
@@ -222,7 +247,7 @@ export function listProjects(includeArchived = false): ProjectRecord[] {
 export function getProject(projectId: string): ProjectRecord | undefined {
   ensurePortfolioSchema();
   const row = db().prepare(`SELECT id,slug,title_en AS titleEn,title_zh AS titleZh,field,context,institution,primary_outcome AS primaryOutcome,
-    secondary_outcome AS secondaryOutcome,version,status,source_candidate_id AS sourceCandidateId,policy_json AS policyJson,created_at AS createdAt,updated_at AS updatedAt FROM projects WHERE id=?`).get(projectId) as Record<string, unknown> | undefined;
+    secondary_outcome AS secondaryOutcome,version,status,source_candidate_id AS sourceCandidateId,policy_json AS policyJson,citation_style AS citationStyle,created_at AS createdAt,updated_at AS updatedAt FROM projects WHERE id=?`).get(projectId) as Record<string, unknown> | undefined;
   return row ? rowToProject(row) : undefined;
 }
 
@@ -246,24 +271,25 @@ export function createProject(input: z.input<typeof projectCreateSchema>): Proje
   const project: Project = {
     id: `project-${randomUUID()}`, titleEn: parsed.titleEn, titleZh: parsed.titleZh, field: parsed.field, context: parsed.context,
     institution: parsed.institution, primaryOutcome: parsed.primaryOutcome, secondaryOutcome: parsed.secondaryOutcome,
-    designLanguage: "中文", writingLanguage: "English", citationStyle: "APA 7", version: "v0.1",
+    designLanguage: "中文", writingLanguage: "English", citationStyle: parsed.citationStyle, version: "v0.1",
   };
   const timestamp = now();
-  db().prepare(`INSERT INTO projects (id,slug,title_en,title_zh,field,context,institution,primary_outcome,secondary_outcome,version,status,source_candidate_id,policy_json,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(project.id, uniqueSlug(project.titleEn), project.titleEn, project.titleZh, project.field, project.context, project.institution, project.primaryOutcome, project.secondaryOutcome, project.version, "active", parsed.sourceCandidateId ?? null, json(defaultPolicy(project)), timestamp, timestamp);
+  db().prepare(`INSERT INTO projects (id,slug,title_en,title_zh,field,context,institution,primary_outcome,secondary_outcome,version,status,source_candidate_id,policy_json,citation_style,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(project.id, uniqueSlug(project.titleEn), project.titleEn, project.titleZh, project.field, project.context, project.institution, project.primaryOutcome, project.secondaryOutcome, project.version, "active", parsed.sourceCandidateId ?? null, json(defaultPolicy(project)), project.citationStyle, timestamp, timestamp);
   const workspace: WorkspaceData = { schemaVersion: seedWorkspace.schemaVersion, project, confirmation: JSON.parse(JSON.stringify(seedWorkspace.confirmation)), works: [], theories: [], constructs: [], experiments: [], claims: [], novelty: [], updatedAt: timestamp };
   writeProjectState(project.id, "workspace", workspace, workspace.schemaVersion);
   return getProject(project.id)!;
 }
 
-export function updateProject(projectId: string, patch: Partial<Pick<ProjectRecord, "titleEn" | "titleZh" | "field" | "context" | "institution" | "primaryOutcome" | "secondaryOutcome" | "status" | "policy">>) {
+export function updateProject(projectId: string, patchInput: z.input<typeof projectUpdateSchema>) {
+  const patch = projectUpdateSchema.parse(patchInput);
   const current = getProject(projectId);
   if (!current) throw new Error("项目不存在。");
   const next = { ...current, ...patch, updatedAt: now() };
-  db().prepare(`UPDATE projects SET title_en=?,title_zh=?,field=?,context=?,institution=?,primary_outcome=?,secondary_outcome=?,status=?,policy_json=?,updated_at=? WHERE id=?`)
-    .run(next.titleEn, next.titleZh, next.field, next.context, next.institution, next.primaryOutcome, next.secondaryOutcome, next.status, json(next.policy), next.updatedAt, projectId);
+  db().prepare(`UPDATE projects SET title_en=?,title_zh=?,field=?,context=?,institution=?,primary_outcome=?,secondary_outcome=?,status=?,policy_json=?,citation_style=?,updated_at=? WHERE id=?`)
+    .run(next.titleEn, next.titleZh, next.field, next.context, next.institution, next.primaryOutcome, next.secondaryOutcome, next.status, json(next.policy), next.citationStyle, next.updatedAt, projectId);
   const workspace = readProjectState<WorkspaceData>(projectId, "workspace");
-  if (workspace) writeProjectState(projectId, "workspace", { ...workspace, project: { ...workspace.project, titleEn: next.titleEn, titleZh: next.titleZh, field: next.field, context: next.context, institution: next.institution, primaryOutcome: next.primaryOutcome, secondaryOutcome: next.secondaryOutcome }, updatedAt: next.updatedAt }, workspace.schemaVersion);
+  if (workspace) writeProjectState(projectId, "workspace", { ...workspace, project: { ...workspace.project, titleEn: next.titleEn, titleZh: next.titleZh, field: next.field, context: next.context, institution: next.institution, primaryOutcome: next.primaryOutcome, secondaryOutcome: next.secondaryOutcome, citationStyle: next.citationStyle }, updatedAt: next.updatedAt }, workspace.schemaVersion);
   return getProject(projectId)!;
 }
 

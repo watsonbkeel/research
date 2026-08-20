@@ -19,6 +19,7 @@ export async function checkFormalExportGate(input: { projectId: string; document
   if (snapshot && snapshot.contentHash && documentVersionContentHash(snapshot) !== snapshot.contentHash) blockers.push({ code: "version-hash-invalid", message: "指定文档版本快照的 contentHash 校验失败。" });
   if (snapshot) {
     if (snapshot.lifecycleStatus !== "reviewable") blockers.push({ code: "version-not-reviewable", message: "指定文档版本尚未通过持久化复审，不能正式导出。" });
+    if ((snapshot.citationClusters ?? []).some((cluster) => cluster.documentOrder === undefined)) blockers.push({ code: "citation-document-order-missing", message: "正式版本的 CitationCluster 缺少整文档 documentOrder。" });
     if (snapshot.evidenceBindingHash !== documentVersionEvidenceBindingHash(snapshot)) blockers.push({ code: "evidence-binding-hash-invalid", message: "指定文档版本冻结的证据链 hash 校验失败。" });
     if (snapshot.proposalInputHash !== documentVersionProposalInputHash(snapshot)) blockers.push({ code: "proposal-input-hash-invalid", message: "指定文档版本冻结的开题输入 hash 校验失败。" });
   }

@@ -62,7 +62,7 @@ describe("AssistantWorkflowRun resume regressions", () => {
 
     const conversation = createConversation({ title: "Citation repair", projectId: project.id, metadata: { documentId: document.id } });
     const startedResponse = await postMessage(new Request("http://localhost/api/assistant/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "第三章没有参考文献，帮我检查并补充。" }) }), { params: Promise.resolve({ conversationId: conversation.id }) });
-    const started = await startedResponse.json(); expect(startedResponse.status).toBe(202); expect(started.workflow.sectionId).toBe(section.id); const jobId = String(started.job.id); const workflowId = String(started.workflow.id);
+    const started = await startedResponse.json(); expect(startedResponse.status).toBe(202); expect(started.workflow.sectionId).toBe(section.id); const jobId = String(started.job.id); const workflowId = String(started.workflow.id); expect(started.workflow.jobId).toBe(jobId); expect(started.workflow.conversationId).toBe(conversation.id);
     await runResearchWorker({ once: true, workerId: "workflow-worker-1" });
     expect(getResearchJob(jobId)?.status).toBe("waiting-user"); expect(workflows.getAssistantWorkflowRun(project.id, workflowId)?.state).toBe("awaiting_human_verification"); expect(workflows.recoverResumableAssistantWorkflows(project.id)).toEqual([]);
     const suggestions = (await listEvidenceExcerpts({ projectId: project.id })).filter((item) => item.claimId === "claim-workflow"); expect(suggestions).toHaveLength(1); expect(suggestions[0].verificationStatus).toBe("ai_suggested"); approvedExcerptId = suggestions[0].id;

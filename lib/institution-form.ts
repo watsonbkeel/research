@@ -178,10 +178,10 @@ export function validateInstitutionForm(form: InstitutionProfileForm): Instituti
   const errors: InstitutionFormError[] = [];
   if (!form.university.trim()) errors.push({ field: "university", message: "请填写 University。" });
   if (!form.program.trim()) errors.push({ field: "program", message: "请填写 Program。" });
+  if (form.verifiedAtLocal.trim() && Number.isNaN(new Date(form.verifiedAtLocal).getTime())) errors.push({ field: "verifiedAtLocal", message: "核验时间格式无效。" });
   if (form.verificationStatus === "verified") {
     if (!form.verifiedBy.trim()) errors.push({ field: "verifiedBy", message: "verified 状态必须填写核验者。" });
     if (!form.verifiedAtLocal.trim()) errors.push({ field: "verifiedAtLocal", message: "verified 状态必须填写核验时间。" });
-    else if (Number.isNaN(new Date(form.verifiedAtLocal).getTime())) errors.push({ field: "verifiedAtLocal", message: "核验时间格式无效。" });
   }
   for (const [index, row] of form.requiredSections.entries()) {
     if (!row.key.trim()) errors.push({ field: `requiredSections.${index}.key`, message: "必填项需要稳定 key。" });

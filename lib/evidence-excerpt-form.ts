@@ -24,6 +24,7 @@ export interface EvidenceExcerptForm {
 
 function localDateTimeFromIso(value: string | undefined) {
   if (!value) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return `${value}T00:00`;
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "";
   const pad = (part: number) => String(part).padStart(2, "0");

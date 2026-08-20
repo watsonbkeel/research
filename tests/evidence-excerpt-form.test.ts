@@ -45,4 +45,9 @@ describe("evidence excerpt form adapter", () => {
     expect(form.locatorType).toBeUndefined();
     expect(validateEvidenceExcerptForm(form)).toEqual(expect.arrayContaining([expect.objectContaining({ field: "locatorType" })]));
   });
+
+  it("keeps a legacy date-only review value on the same local calendar day", () => {
+    const form = evidenceExcerptToForm({ id: "dated", workId: "work-1", page: "2", paraphrase: "Note", supportDirection: "supporting", strength: "medium", relevance: "medium", verificationStatus: "unverified", rightsStatus: "unknown", reviewDate: "2026-08-20", createdAt: "2026-08-20T00:00:00.000Z", updatedAt: "2026-08-20T00:00:00.000Z" });
+    expect(form.reviewedAtLocal).toBe("2026-08-20T00:00");
+  });
 });

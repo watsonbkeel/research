@@ -5,7 +5,7 @@
 - 开始分支：`codex/production-hardening-1`
 - 开始 commit：`3cb26b30309104cab6f39f14d6f7888fc7d22681`
 - 完成分支：`codex/ui-completion-staging-1`
-- 完成 commit：待本提交完成后填写
+- 完成 commit：`2c6a589efab20bfabb099480481c54f94a8e63fc`（功能与文档提交；报告最终化提交随后追加）
 - 本轮只处理两个 UI 缺口：结构化院校模板无法完整编辑；EvidenceExcerpt 无法通过网页创建/修复明确 `locatorType`。
 - 未修改生成、证据闭环、CitationService、FormalExportGate、Assistant 或 project-document 后端主链。
 

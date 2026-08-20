@@ -5,7 +5,7 @@
 - 开始分支：`codex/production-hardening-1`
 - 开始 commit：`3cb26b30309104cab6f39f14d6f7888fc7d22681`
 - 完成分支：`codex/ui-completion-staging-1`
-- 完成 commit：`2c6a589efab20bfabb099480481c54f94a8e63fc`（功能与文档提交；报告最终化提交随后追加）
+- 完成 commit：`5ba1ae0f78443c7cf48847c577d9d307b6fc11c9`（UI 功能与适配器最终修复；报告最终化提交随后追加）
 - 本轮只处理两个 UI 缺口：结构化院校模板无法完整编辑；EvidenceExcerpt 无法通过网页创建/修复明确 `locatorType`。
 - 未修改生成、证据闭环、CitationService、FormalExportGate、Assistant 或 project-document 后端主链。
 
@@ -27,7 +27,7 @@
 ## 测试证据
 
 - 失败测试先于生产代码提交，原因是旧页面没有适配器和独立编辑器模块。
-- UI 测试文件：7 个；测试数：17 个，全部通过。
+- UI 测试文件：7 个；测试数：18 个，全部通过。
 - 全部测试：40 个文件，158 个测试，全部通过。
 - `npm run lint`：通过，无错误或警告。
 - `npm run typecheck`：通过。

@@ -79,3 +79,7 @@ FormalExportGate 会重新计算三类快照 hash，拒绝非 `reviewable` 版�
 研究者必须亲自核对并批准 EvidenceExcerpt 原文、locator、Claim 关系和方向；处理 checked-unknown publication status；核验院校模板；批准 revision diff；运行一致性/质量复核；最后批准精确版本。AI 和 worker 均不能代替这些人工门。
 
 手工验收：创建 formal prospective 文档；登记并核验 Work 与 publication status；上传有权使用的 PDF；创建带 locator 的 human-verified excerpt；发送“第三章没有参考文献，帮我检查并补充。”；核验证据；审批 diff；运行 Coverage、CitationAudit、ConsistencyReview 和 QualityReport；对三 hash 版本审批；分别导出 APA 与 GB/T，并确认正文无内部 token、参考文献仅含实际引用 Work。
+
+## 追加收口：引用格式与任务绑定
+
+本轮追加修复已提交于 `22389450f77cef0db07ab047ed25f0ecf7804e17`：`Project.citationStyle` 现在有数据库列、幂等迁移、严格 Zod schema、API PATCH 校验和 Workbench 选择器；SQLite 重开后 GB/T 仍保持，旧 DocumentVersion 保留 APA，新 DocumentVersion 保存 GB/T。新 CitationCluster 写入整文档 `documentOrder`，FormalExportGate 阻断缺失顺序的正式版本，citeproc 和正式 exporter 按该顺序处理。AssistantWorkflowRun 现在保存对应 `jobId`、conversation、prompt 和 profile。新增引用格式持久化测试后，本地全套测试为 27 files / 107 tests passed。追加提交的 GitHub Actions run `32331150235` 已 success：https://github.com/watsonbkeel/research/actions/runs/32331150235 。

@@ -5,7 +5,7 @@ import path from "node:path";
 import * as workflows from "@/lib/assistant-workflow";
 import { createProject, registerProjectWork } from "@/lib/portfolio";
 import { ensureProjectProposal, getProjectDocument, listDocumentVersions, saveProjectDocument } from "@/lib/project-documents";
-import { createConversation, getResearchJob, listArtifacts } from "@/lib/assistant";
+import { claimNextJob, createConversation, createResearchJob, getResearchJob, listArtifacts, listResearchJobs, transitionJob } from "@/lib/assistant";
 import { POST as postMessage } from "@/app/api/assistant/conversations/[conversationId]/messages/route";
 import { POST as postAction } from "@/app/api/assistant/jobs/[jobId]/actions/route";
 import { runResearchWorker } from "@/scripts/research-worker";
@@ -34,6 +34,64 @@ describe("AssistantWorkflowRun resume regressions", () => {
     expect(recover).toBeTypeOf("function");
     expect(recover!(project.id).map((item) => item.id)).toEqual([active.id]);
     expect(workflows.getAssistantWorkflowRun(project.id, waiting.id)?.state).toBe("awaiting_human_verification");
+  });
+
+  it("requeues a failed ResearchJob for the same non-terminal WorkflowRun", () => {
+    directory = mkdtempSync(path.join(tmpdir(), "workflow-failed-job-")); process.env.WORKBENCH_DATA_DIR = directory;
+    const project = createProject({ titleEn: "Failed job recovery", titleZh: "失败任务恢复", field: "Methods", context: "Fixture", institution: "Verified University", primaryOutcome: "Trust", secondaryOutcome: "Risk" });
+    const document = ensureProjectProposal(project.id);
+    const conversation = createConversation({ title: "Recovery", projectId: project.id });
+    const run = workflows.startAssistantWorkflow({ projectId: project.id, documentId: document.id, intent: "section_revision", idempotencyKey: "failed-job" });
+    workflows.advanceAssistantWorkflow(project.id, run.id, "verifying_metadata");
+    const job = createResearchJob({ conversationId: conversation.id, prompt: "Resume failed workflow", kind: "assistant-section_revision", input: { projectId: project.id, documentId: document.id, workflowRunId: run.id } });
+    workflows.bindAssistantWorkflowJob(project.id, run.id, { jobId: job.id, conversationId: conversation.id, prompt: job.prompt });
+    expect(claimNextJob("failed-job-fixture")?.id).toBe(job.id);
+    transitionJob(job.id, "failed", "fixture crash");
+
+    const recover = (workflows as unknown as { recoverAndRequeueAssistantWorkflows?: () => string[] }).recoverAndRequeueAssistantWorkflows;
+    expect(recover).toBeTypeOf("function");
+    expect(recover!()).toContain(run.id);
+    expect(getResearchJob(job.id)?.status).toBe("queued");
+    expect(workflows.getAssistantWorkflowRun(project.id, run.id)?.jobId).toBe(job.id);
+    expect(workflows.getAssistantWorkflowRun(project.id, run.id)?.state).toBe("verifying_metadata");
+  });
+
+  it("creates one replacement Job when a resumable WorkflowRun has lost its Job", () => {
+    directory = mkdtempSync(path.join(tmpdir(), "workflow-missing-job-")); process.env.WORKBENCH_DATA_DIR = directory;
+    const project = createProject({ titleEn: "Missing job recovery", titleZh: "丢失任务恢复", field: "Methods", context: "Fixture", institution: "Verified University", primaryOutcome: "Trust", secondaryOutcome: "Risk" });
+    const document = ensureProjectProposal(project.id);
+    const conversation = createConversation({ title: "Recovery", projectId: project.id });
+    const run = workflows.startAssistantWorkflow({ projectId: project.id, documentId: document.id, sectionId: document.manuscript.chapters[2].sections[0].id, intent: "section_revision", idempotencyKey: "missing-job" });
+    workflows.advanceAssistantWorkflow(project.id, run.id, "auditing");
+    workflows.bindAssistantWorkflowJob(project.id, run.id, { jobId: "job-that-does-not-exist", conversationId: conversation.id, prompt: "Resume missing workflow" });
+
+    const recover = (workflows as unknown as { recoverAndRequeueAssistantWorkflows?: () => string[] }).recoverAndRequeueAssistantWorkflows;
+    expect(recover).toBeTypeOf("function");
+    expect(recover!()).toContain(run.id);
+    const recovered = workflows.getAssistantWorkflowRun(project.id, run.id)!;
+    expect(recovered.id).toBe(run.id);
+    expect(recovered.jobId).not.toBe("job-that-does-not-exist");
+    expect(getResearchJob(recovered.jobId!)?.input.workflowRunId).toBe(run.id);
+    expect(listResearchJobs()).toHaveLength(1);
+
+    expect(recover!()).not.toContain(run.id);
+    expect(listResearchJobs()).toHaveLength(1);
+    expect(workflows.getAssistantWorkflowRun(project.id, run.id)?.jobId).toBe(recovered.jobId);
+  });
+
+  it("does not create a replacement Job across a human verification gate", () => {
+    directory = mkdtempSync(path.join(tmpdir(), "workflow-human-gate-")); process.env.WORKBENCH_DATA_DIR = directory;
+    const project = createProject({ titleEn: "Human gate recovery", titleZh: "人工门恢复", field: "Methods", context: "Fixture", institution: "Verified University", primaryOutcome: "Trust", secondaryOutcome: "Risk" });
+    const document = ensureProjectProposal(project.id);
+    const run = workflows.startAssistantWorkflow({ projectId: project.id, documentId: document.id, intent: "section_revision", idempotencyKey: "human-gate" });
+    workflows.advanceAssistantWorkflow(project.id, run.id, "awaiting_human_verification");
+    workflows.bindAssistantWorkflowJob(project.id, run.id, { jobId: "missing-human-gate-job" });
+
+    const recover = (workflows as unknown as { recoverAndRequeueAssistantWorkflows?: () => string[] }).recoverAndRequeueAssistantWorkflows;
+    expect(recover).toBeTypeOf("function");
+    expect(recover!()).not.toContain(run.id);
+    expect(listResearchJobs()).toHaveLength(0);
+    expect(workflows.getAssistantWorkflowRun(project.id, run.id)).toMatchObject({ state: "awaiting_human_verification", jobId: "missing-human-gate-job" });
   });
 
   it("resumes the same worker job after evidence approval and applies one approved revision", async () => {

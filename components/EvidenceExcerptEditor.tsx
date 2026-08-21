@@ -9,6 +9,7 @@ import {
   createEmptyEvidenceExcerptForm,
   evidenceExcerptToForm,
   evidenceFormToInput,
+  changeEvidenceWork,
   validateEvidenceExcerptForm,
   type EvidenceExcerptForm,
 } from "@/lib/evidence-excerpt-form";
@@ -38,10 +39,12 @@ function locationText(excerpt: EvidenceExcerpt) {
 export function EvidenceExcerptEditor({ data, assets, initial, excerpts = [], saving, onSave, onCancelEdit, onEdit, onDelete }: EvidenceExcerptEditorProps) {
   const [form, setForm] = useState<EvidenceExcerptForm>(() => initial ? evidenceExcerptToForm(initial) : createEmptyEvidenceExcerptForm(data.works[0]?.id));
   const [errors, setErrors] = useState<Array<{ field: string; message: string }>>([]);
+  const [workChanged, setWorkChanged] = useState(false);
 
   useEffect(() => {
     setForm(initial ? evidenceExcerptToForm(initial) : createEmptyEvidenceExcerptForm(data.works[0]?.id));
     setErrors([]);
+    setWorkChanged(false);
   }, [data.works, initial]);
 
   function update(patch: Partial<EvidenceExcerptForm>) {
@@ -53,6 +56,18 @@ export function EvidenceExcerptEditor({ data, assets, initial, excerpts = [], sa
     if (value === "page") update({ locatorType: value, locator: "" });
     else update({ locatorType: value, page: "", locator: "" });
   }
+
+  function changeWork(value: string) {
+    setWorkChanged(form.workId !== value);
+    setForm((current) => changeEvidenceWork(current, value));
+    setErrors([]);
+  }
+
+  const availableAssets = assets.filter((asset) => (!data.project?.id || asset.projectId === data.project.id) && asset.workId === form.workId);
+  useEffect(() => {
+    if (!form.fullTextAssetId || availableAssets.some((asset) => asset.id === form.fullTextAssetId)) return;
+    setForm((current) => ({ ...current, fullTextAssetId: "" }));
+  }, [availableAssets, form.fullTextAssetId]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -68,8 +83,8 @@ export function EvidenceExcerptEditor({ data, assets, initial, excerpts = [], sa
     <form className="evidence-form panel" onSubmit={submit}>
       <div className="panel-title"><div><h2>{initial ? "编辑 EvidenceExcerpt" : "创建 EvidenceExcerpt"}</h2><p>定位类型必须和定位值匹配；旧记录没有类型时请在这里补齐后 PATCH。</p></div></div>
       <div className="evidence-form-grid">
-        <label><span>来源 Work</span><select value={form.workId} onChange={(event) => update({ workId: event.target.value })}>{data.works.map((work) => <option key={work.id} value={work.id}>{work.id} · {work.title.slice(0, 60)}</option>)}</select></label>
-        <label><span>全文资产</span><select value={form.fullTextAssetId} onChange={(event) => update({ fullTextAssetId: event.target.value })}><option value="">无（人工定位）</option>{assets.filter((asset) => asset.workId === form.workId).map((asset) => <option key={asset.id} value={asset.id}>{asset.id} · {asset.status}</option>)}</select></label>
+        <label><span>来源 Work</span><select value={form.workId} onChange={(event) => changeWork(event.target.value)}>{data.works.map((work) => <option key={work.id} value={work.id}>{work.id} · {work.title.slice(0, 60)}</option>)}</select></label>
+        <label><span>全文资产</span><select value={form.fullTextAssetId} onChange={(event) => update({ fullTextAssetId: event.target.value })}><option value="">无（人工定位）</option>{availableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.id} · {asset.status}</option>)}</select></label>
         <label><span>Locator type</span><select value={form.locatorType ?? ""} onChange={(event) => changeLocatorType((event.target.value || undefined) as EvidenceExcerptForm["locatorType"])}><option value="">待确认</option>{locatorTypes.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         {form.locatorType === "page" ? <label><span>页码（page）</span><input value={form.page} onChange={(event) => update({ page: event.target.value })} placeholder="12、12–14 或 S3" /></label> : <label><span>定位（locator）</span><input value={form.locator} onChange={(event) => update({ locator: event.target.value })} placeholder={form.locatorType ? `${locatorLabels[form.locatorType]}定位，例如 Chapter 3` : "先选择定位类型"} /></label>}
         <label><span>Claim ID</span><input value={form.claimId} onChange={(event) => update({ claimId: event.target.value })} placeholder="claim-1" /></label>
@@ -84,6 +99,7 @@ export function EvidenceExcerptEditor({ data, assets, initial, excerpts = [], sa
         <label className="full"><span>原文短引文（可选）</span><textarea value={form.quote} onChange={(event) => update({ quote: event.target.value })} maxLength={2000} /></label>
         <label className="full"><span>研究者释义</span><textarea value={form.paraphrase} onChange={(event) => update({ paraphrase: event.target.value })} maxLength={5000} /></label>
       </div>
+      {workChanged && <p className="form-hint">已清除旧全文文件，请重新选择与新文献对应的 PDF；更换文献会使当前人工核验失效。</p>}
       {errors.length > 0 && <div className="form-errors" role="alert">{errors.map((error) => <p key={`${error.field}-${error.message}`}>{error.field}: {error.message}</p>)}</div>}
       <div className="form-actions"><button className="button primary" type="submit" disabled={saving}><Save size={15} />{saving ? "保存中" : initial ? "更新摘录" : "保存摘录"}</button>{initial && onCancelEdit && <button className="button secondary" type="button" onClick={onCancelEdit}><X size={15} />取消编辑</button>}</div>
     </form>

@@ -119,7 +119,7 @@ export function InstitutionProfileEditor({ profile, availableSections, saving, o
       </div>
 
       <div className="institution-editor-section">
-        <div className="editor-section-heading"><div><h3>结构化必填章节</h3><p>优先 sectionId，其次 sectionKey，最后使用 label / aliases 的标准化精确匹配；不会使用模糊相似度。</p></div><button className="button secondary" type="button" onClick={addRequiredSection}><Plus size={15} />添加必填项</button></div>
+        <div className="editor-section-heading"><div><h3>结构化必填章节</h3><p>优先 sectionId，其次 sectionKey，最后使用 label / aliases 的标准化精确匹配；不会使用模糊相似度。</p>{availableSections.length === 0 && <p className="form-hint">项目中没有 Confirmation Proposal，sectionId 映射暂不可用；现有映射会保留，切换到开题文档后再编辑。</p>}</div><button className="button secondary" type="button" onClick={addRequiredSection}><Plus size={15} />添加必填项</button></div>
         <div className="required-sections-list">
           {form.requiredSections.map((row, index) => {
             const rowPrefix = `requiredSections.${index}`;
@@ -128,7 +128,7 @@ export function InstitutionProfileEditor({ profile, availableSections, saving, o
                 <label><span>Key</span><input value={row.key} onChange={(event) => updateRequiredSection(index, { key: event.target.value })} /></label>
                 <label><span>Label</span><input className={inputClass(`${rowPrefix}.label`)} value={row.label} onChange={(event) => updateRequiredSection(index, { label: event.target.value })} /></label>
                 <label className="check-inline"><input type="checkbox" checked={row.required} onChange={(event) => updateRequiredSection(index, { required: event.target.checked })} /><span>Required</span></label>
-                <label><span>Mapped manuscript section</span><select value={row.sectionId} onChange={(event) => updateRequiredSection(index, { sectionId: event.target.value })}><option value="">不指定</option>{availableSections.map((section) => <option key={section.id} value={section.id}>{section.number} {section.title}</option>)}</select></label>
+                <label><span>Mapped manuscript section</span><select disabled={availableSections.length === 0} value={row.sectionId} onChange={(event) => updateRequiredSection(index, { sectionId: event.target.value })}><option value="">{availableSections.length === 0 ? "无 Confirmation Proposal" : "不指定"}</option>{row.sectionId && !availableSections.some((section) => section.id === row.sectionId) && <option value={row.sectionId}>{row.sectionId}（当前映射）</option>}{availableSections.map((section) => <option key={section.id} value={section.id}>{section.number} {section.title}</option>)}</select></label>
                 <label><span>Section key</span><input value={row.sectionKey} onChange={(event) => updateRequiredSection(index, { sectionKey: event.target.value })} /></label>
                 <label><span>Aliases</span><textarea value={row.aliasesText} onChange={(event) => updateRequiredSection(index, { aliasesText: event.target.value })} placeholder="每行一个精确别名" /></label>
                 <label><span>Minimum characters</span><input type="number" min="0" value={row.minimumCharacters} onChange={(event) => updateRequiredSection(index, { minimumCharacters: event.target.value })} /></label>

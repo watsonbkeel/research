@@ -26,6 +26,7 @@ import type { DatasetRegistry } from "@/lib/datasets";
 import type { PaperConcept, ProjectDocument } from "@/lib/project-documents";
 import { InstitutionProfileEditor } from "@/components/InstitutionProfileEditor";
 import { EvidenceExcerptEditor } from "@/components/EvidenceExcerptEditor";
+import { availableSectionsForInstitutionEditor } from "@/lib/institution-editor-scope";
 
 export type DoctoralView = "manuscript" | "evidence-excerpts" | "research-plan" | "results" | "outputs" | "review" | "materials" | "figures";
 
@@ -108,7 +109,7 @@ export function ManuscriptCenter({ notify, projectId }: { notify: (message: stri
   }
 
   const selected = useMemo(() => manuscript?.chapters.flatMap((chapter) => chapter.sections).find((section) => section.id === selectedId), [manuscript, selectedId]);
-  const availableInstitutionSections = useMemo(() => manuscript?.chapters.flatMap((chapter) => chapter.sections.map((section) => ({ id: section.id, number: section.number, title: section.title }))) ?? [], [manuscript]);
+  const availableInstitutionSections = useMemo(() => availableSectionsForInstitutionEditor(documents), [documents]);
   const currentDocument = documents.find((item) => item.id === documentId);
   const currentVersionId = currentDocument?.currentVersionId;
   const formalExportUrl = currentVersionId
@@ -296,12 +297,14 @@ export function EvidenceExcerptCenter({ data, notify, projectId }: { data: Works
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    const result = await response.json() as { excerpt?: EvidenceExcerpt; error?: string };
+    const result = await response.json() as { excerpt?: EvidenceExcerpt; verificationInvalidated?: boolean; error?: string };
     setSavingExcerpt(false);
     if (!response.ok || !result.excerpt) return notify(apiError(result, "证据摘录保存失败"));
     setEditingExcerpt(undefined);
     await refresh();
-    notify("EvidenceExcerpt 已保存；相关文档需要创建或刷新版本，并重新运行正式导出检查。");
+    notify(result.verificationInvalidated
+      ? "证据已更新，原人工核验已失效，请重新核验。相关文档需要创建或刷新版本，并重新运行正式导出检查。"
+      : "EvidenceExcerpt 已保存；相关文档需要创建或刷新版本，并重新运行正式导出检查。");
   }
 
   async function removeExcerpt(id: string) {

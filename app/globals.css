@@ -81,7 +81,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .brand-block strong { display: block; font-size: 15px; font-weight: 700; }
 .brand-block span { display: block; margin-top: 3px; color: #9eafa7; font-size: 11px; text-transform: uppercase; }
 .sidebar-close { display: none !important; margin-left: auto; }
-.sidebar nav { padding: 18px 10px; display: grid; gap: 4px; }
+.sidebar nav { min-height: 0; flex: 1 1 auto; padding: 18px 10px; display: grid; gap: 4px; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: #52655d transparent; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
 .sidebar nav button { width: 100%; height: 42px; padding: 0 11px; border: 0; border-radius: 5px; display: flex; align-items: center; gap: 11px; color: #b9c7c1; background: transparent; cursor: pointer; text-align: left; }
 .sidebar nav button:hover { color: white; background: #2b3833; }
 .sidebar nav button.active { color: white; background: #35463f; box-shadow: inset 3px 0 #74b899; }

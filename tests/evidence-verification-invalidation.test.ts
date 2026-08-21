@@ -16,7 +16,7 @@ async function verifiedExcerpt() {
   const project = createProject({ titleEn: "Verification invalidation", titleZh: "核验失效", field: "Methods", context: "Fixture", institution: "University", primaryOutcome: "Outcome", secondaryOutcome: "Secondary" });
   const work = { id: "work-verified", authors: "Author", year: 2026, title: "Verified work", venue: "Journal", group: "方法来源" as const, status: "书目信息已核对" as const, bibliographicStatus: "unverified" as const, relevance: "Fixture", createdAt: "2026-08-20T00:00:00.000Z" };
   registerProjectWork(project.id, work);
-  const workspace = await readWorkspace(project.id); workspace.works = [work]; workspace.claims = [{ id: "claim-1", text: "Claim one", kind: "已发表事实", citationIds: [] }]; writeProjectState(project.id, "workspace", workspace);
+  const workspace = await readWorkspace(project.id); workspace.works = [work]; workspace.claims = [{ id: "claim-1", text: "Claim one", kind: "已发表事实", citationIds: [] }, { id: "claim-2", text: "Claim two", kind: "已发表事实", citationIds: [] }]; writeProjectState(project.id, "workspace", workspace);
   updateWorkVerification(project.id, work.id, { id: "verification-verified", projectId: project.id, workId: work.id, provider: "manual", inputIdentifier: work.id, checkedAt: "2026-08-20T00:00:00.000Z", matchedFields: { doi: false, title: true, authors: true, year: true, venue: true }, result: "verified", retractionStatus: "clear" });
   const excerpt = await createEvidenceExcerpt({ workId: work.id, locatorType: "page", page: "12", quote: "Exact quote", claimId: "claim-1", reviewer: "Alice", reviewedAt: "2026-08-20T01:00:00.000Z", verificationStatus: "human_verified" }, project.id);
   return { project, excerpt };

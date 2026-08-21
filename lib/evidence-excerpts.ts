@@ -72,8 +72,8 @@ export interface EvidenceExcerptInput {
   workId: string;
   fullTextAssetId?: string;
   locatorType?: EvidenceLocatorType;
-  locator?: string;
-  page?: string | number;
+  locator?: string | null;
+  page?: string | number | null;
   quote?: string;
   paraphrase?: string;
   claimId?: string | null;
@@ -103,10 +103,14 @@ function readExcerpts(projectId?: string): EvidenceExcerpt[] {
   const parsed = readWorkspaceState<unknown>(STATE_KEY, projectId);
   return Array.isArray(parsed) ? (parsed as EvidenceExcerpt[]).map((item) => {
     const reviewedAt = item.reviewedAt ?? item.reviewDate;
+    const legacyPage = item.page ?? (item.locatorType === "page" ? item.locator : undefined);
+    const locatorType = item.locatorType ?? (legacyPage ? "page" : undefined);
     return {
       ...item,
       projectId: item.projectId ?? projectId,
-      locatorType: item.page ? "page" : item.locatorType,
+      locatorType,
+      page: locatorType === "page" ? legacyPage : undefined,
+      locator: locatorType === "page" ? undefined : item.locator,
       reviewedAt,
       reviewDate: item.reviewDate ?? reviewedAt,
       verificationStatus: projectId && item.verificationStatus === "claim_verified" && (!item.reviewer || !reviewedAt) ? "ai_suggested" : item.verificationStatus,
@@ -155,16 +159,20 @@ function validateInput(input: EvidenceExcerptInput, allowLegacy = false): Omit<E
     throw new EvidenceExcerptValidationError("quotationLimit格式无效。");
   }
   const verificationStatus = ensureEnum(input.verificationStatus, VERIFICATION_STATUSES, "unverified", "verificationStatus");
-  const page = normalizePage(input.page);
-  const locator = optionalString(input.locator, "locator", 500);
-  const locatorType = page
-    ? "page"
-    : input.locatorType === undefined
-      ? undefined
-      : ensureEnum(input.locatorType, EVIDENCE_LOCATOR_TYPES, "page", "locatorType");
+  const suppliedPage = normalizePage(input.page);
+  const suppliedLocator = optionalString(input.locator, "locator", 500);
+  const locatorType = input.locatorType === undefined || input.locatorType === null
+    ? (suppliedPage ? "page" : undefined)
+    : ensureEnum(input.locatorType, EVIDENCE_LOCATOR_TYPES, "page", "locatorType");
+  // Older clients sent a page value through `locator`; accept that one legacy
+  // shape when the type is explicit, but never persist both fields.
+  const page = locatorType === "page" ? suppliedPage ?? suppliedLocator : undefined;
+  const locator = locatorType === undefined || (locatorType && locatorType !== "page") ? suppliedLocator : undefined;
+  if (!allowLegacy && locatorType === "page" && !page) throw new EvidenceExcerptValidationError("page定位必须填写page。");
+  if (!allowLegacy && locatorType && locatorType !== "page" && !locator) throw new EvidenceExcerptValidationError("非page定位必须填写locator。");
+  if (!allowLegacy && locator && !locatorType) throw new EvidenceExcerptValidationError("填写locator时必须明确locatorType。");
   if (!allowLegacy && ["human_verified", "claim_verified"].includes(verificationStatus) && (!reviewer || !reviewedAt)) throw new EvidenceExcerptValidationError("human_verified必须同时填写reviewer和reviewedAt。");
   if (!allowLegacy && (quote || paraphrase) && !page && !locator) throw new EvidenceExcerptValidationError("直接引文或研究者释义必须填写page或locator定位。");
-  if (!allowLegacy && locator && !locatorType) throw new EvidenceExcerptValidationError("填写locator时必须明确locatorType。");
   return {
     projectId: undefined,
     workId: input.workId.trim(),
@@ -198,6 +206,41 @@ export class EvidenceExcerptValidationError extends Error {
   }
 }
 
+function comparableLocatorType(excerpt: Pick<EvidenceExcerpt, "locatorType" | "page">) {
+  return excerpt.locatorType ?? (excerpt.page ? "page" : undefined);
+}
+
+function comparableString(value: unknown) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+export function hasMaterialEvidenceChange(current: EvidenceExcerpt, next: EvidenceExcerptInput): boolean {
+  const currentValues = {
+    workId: comparableString(current.workId),
+    fullTextAssetId: comparableString(current.fullTextAssetId),
+    quote: comparableString(current.quote),
+    paraphrase: comparableString(current.paraphrase),
+    page: comparableString(current.page),
+    locatorType: comparableString(comparableLocatorType(current)),
+    locator: comparableString(current.locator),
+    claimId: comparableString(current.claimId),
+    supportDirection: comparableString(current.supportDirection),
+  };
+  const nextValues = {
+    workId: comparableString(next.workId ?? current.workId),
+    fullTextAssetId: comparableString(next.fullTextAssetId),
+    quote: comparableString(next.quote),
+    paraphrase: comparableString(next.paraphrase),
+    page: comparableString(next.page),
+    locatorType: comparableString(next.locatorType),
+    locator: comparableString(next.locator),
+    claimId: comparableString(next.claimId),
+    supportDirection: comparableString(next.supportDirection),
+  };
+  return Object.keys(currentValues).some((key) => currentValues[key as keyof typeof currentValues] !== nextValues[key as keyof typeof nextValues]);
+}
+
 export async function listEvidenceExcerpts(filters: { id?: string; workId?: string; claimId?: string; projectId?: string } = {}) {
   ensureEvidenceSchema();
   if (filters.projectId) await readWorkspace(filters.projectId);
@@ -215,6 +258,7 @@ export async function createEvidenceExcerpt(input: EvidenceExcerptInput, project
   const work = workspace.works.find((item) => item.id === input.workId);
   if (projectId && !work) throw new EvidenceExcerptValidationError("Work不存在或不属于当前项目。");
   if (projectId && work?.bibliographicStatus !== "verified") throw new EvidenceExcerptValidationError("Work书目信息尚未verified，不能建立正式证据摘录。");
+  if (projectId && input.claimId && !workspace.claims.some((claim) => claim.id === input.claimId)) throw new EvidenceExcerptValidationError("claimId不存在或不属于当前项目。");
   const excerpts = readExcerpts(projectId);
   const normalized = validateInput(input, !projectId);
   if (projectId && normalized.fullTextAssetId) {
@@ -237,11 +281,55 @@ export async function updateEvidenceExcerpt(patch: EvidenceExcerptPatch, project
   const index = excerpts.findIndex((excerpt) => excerpt.id === patch.id);
   if (index < 0) throw new EvidenceExcerptValidationError("EvidenceExcerpt不存在。");
   const current = excerpts[index];
-  const candidate: EvidenceExcerptInput = { ...current, ...patch, id: current.id, page: patch.page ?? current.page };
+  const nextWorkId = patch.workId !== undefined ? patch.workId : current.workId;
+  const nextLocatorType = patch.locatorType !== undefined ? patch.locatorType : current.locatorType;
+  let nextPage: string | number | null | undefined;
+  let nextLocator: string | null | undefined;
+  if (nextLocatorType === "page") {
+    nextPage = patch.page !== undefined
+      ? patch.page
+      : current.locatorType === "page" || (!current.locatorType && current.page)
+        ? current.page
+        : undefined;
+    nextLocator = null;
+  } else if (nextLocatorType) {
+    nextLocator = patch.locator !== undefined
+      ? patch.locator
+      : current.locatorType === nextLocatorType
+        ? current.locator
+        : undefined;
+    nextPage = null;
+  } else {
+    nextPage = patch.page !== undefined ? patch.page : current.page;
+    nextLocator = patch.locator !== undefined ? patch.locator : current.locator;
+  }
+  const nextFullTextAssetId = patch.fullTextAssetId !== undefined
+    ? patch.fullTextAssetId
+    : nextWorkId === current.workId
+      ? current.fullTextAssetId
+      : undefined;
+  const candidate: EvidenceExcerptInput = {
+    ...current,
+    ...patch,
+    id: current.id,
+    workId: nextWorkId,
+    fullTextAssetId: nextFullTextAssetId,
+    locatorType: nextLocatorType,
+    page: nextPage,
+    locator: nextLocator,
+  };
+  const materialChange = hasMaterialEvidenceChange(current, candidate);
+  if (current.verificationStatus === "human_verified" && materialChange) {
+    candidate.verificationStatus = "unverified";
+    candidate.reviewer = undefined;
+    candidate.reviewedAt = undefined;
+    candidate.reviewDate = undefined;
+  }
   if (projectId) {
     const workspace = await readWorkspace(projectId); const work = workspace.works.find((item) => item.id === candidate.workId);
     if (!work) throw new EvidenceExcerptValidationError("Work不存在或不属于当前项目。");
     if (work.bibliographicStatus !== "verified") throw new EvidenceExcerptValidationError("Work书目信息尚未verified，不能建立正式证据摘录。");
+    if (candidate.claimId && !workspace.claims.some((claim) => claim.id === candidate.claimId)) throw new EvidenceExcerptValidationError("claimId不存在或不属于当前项目。");
   }
   const normalized = validateInput(candidate, !projectId);
   if (projectId && normalized.fullTextAssetId) {

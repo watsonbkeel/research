@@ -21,10 +21,10 @@ describe("evidence excerpt form adapter", () => {
     expect(input).not.toHaveProperty("quote");
     if (locatorType === "page") {
       expect(input.page).toBe("12");
-      expect(input.locator).toBeUndefined();
+      expect(input.locator).toBeNull();
     } else {
       expect(input.locator).toBe(location.locator);
-      expect(input.page).toBeUndefined();
+      expect(input.page).toBeNull();
     }
   });
 

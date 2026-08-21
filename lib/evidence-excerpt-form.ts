@@ -22,6 +22,11 @@ export interface EvidenceExcerptForm {
   rightsStatus: EvidenceExcerpt["rightsStatus"];
 }
 
+export function changeEvidenceWork(form: EvidenceExcerptForm, nextWorkId: string): EvidenceExcerptForm {
+  if (form.workId === nextWorkId) return form;
+  return { ...form, workId: nextWorkId, fullTextAssetId: "" };
+}
+
 function localDateTimeFromIso(value: string | undefined) {
   if (!value) return "";
   if (/^\d{4}-\d{2}-\d{2}$/u.test(value)) return `${value}T00:00`;
@@ -87,8 +92,8 @@ export function evidenceFormToInput(form: EvidenceExcerptForm): EvidenceExcerptI
     workId: form.workId.trim(),
     ...(form.fullTextAssetId.trim() ? { fullTextAssetId: form.fullTextAssetId.trim() } : {}),
     ...(form.locatorType ? { locatorType: form.locatorType } : {}),
-    ...(page ? { page } : {}),
-    ...(locator ? { locator } : {}),
+    ...(form.locatorType === "page" ? { page: page || null, locator: null } : {}),
+    ...(form.locatorType && form.locatorType !== "page" ? { locator: locator || null, page: null } : {}),
     ...(form.quote.trim() ? { quote: form.quote.trim() } : {}),
     ...(form.paraphrase.trim() ? { paraphrase: form.paraphrase.trim() } : {}),
     ...(form.claimId.trim() ? { claimId: form.claimId.trim() } : { claimId: null }),

@@ -65,7 +65,10 @@ export async function PATCH(request: Request) {
   }
   const id = body?.id ?? new URL(request.url).searchParams.get("id") ?? "";
   try {
-    return NextResponse.json({ excerpt: await updateEvidenceExcerpt({ ...body, id }, projectIdFromRequest(request)) });
+    const projectId = projectIdFromRequest(request);
+    const before = (await listEvidenceExcerpts({ id, projectId }))[0];
+    const excerpt = await updateEvidenceExcerpt({ ...body, id }, projectId);
+    return NextResponse.json({ excerpt, verificationInvalidated: before?.verificationStatus === "human_verified" && excerpt.verificationStatus !== "human_verified" });
   } catch (error) {
     return requestError(error);
   }

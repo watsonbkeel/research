@@ -23,7 +23,7 @@ describe("EvidenceExcerpt PATCH claim validation", () => {
       return { project, work };
     };
     const a = await makeProject("a");
-    const b = await makeProject("b");
+    await makeProject("b");
     const excerpt = await createEvidenceExcerpt({ workId: a.work.id, locatorType: "page", page: "12", paraphrase: "Note", claimId: "claim-a" }, a.project.id);
     const patch = async (projectId: string, claimId: string) => PATCH(new Request(`http://localhost/api/projects/${projectId}/evidence-excerpts`, { method: "PATCH", body: JSON.stringify({ id: excerpt.id, claimId }), headers: { "content-type": "application/json" } }), { params: Promise.resolve({ projectId }) });
     const missing = await patch(a.project.id, "claim-missing");

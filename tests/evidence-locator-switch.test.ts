@@ -27,8 +27,10 @@ describe("EvidenceExcerpt locator switching", () => {
     const { project, excerpt } = await fixture();
     const updated = await updateEvidenceExcerpt({ id: excerpt.id, locatorType: "chapter", locator: "Chapter 3" }, project.id);
     const persisted = (await listEvidenceExcerpts({ projectId: project.id, id: excerpt.id }))[0];
-    expect(updated).toMatchObject({ locatorType: "chapter", locator: "Chapter 3", page: undefined });
-    expect(persisted).toMatchObject({ locatorType: "chapter", locator: "Chapter 3", page: undefined });
+    expect(updated).toMatchObject({ locatorType: "chapter", locator: "Chapter 3" });
+    expect(updated.page).toBeUndefined();
+    expect(persisted).toMatchObject({ locatorType: "chapter", locator: "Chapter 3" });
+    expect(persisted.page).toBeUndefined();
   });
 
   it("clears locator when switching non-page to page", async () => {
@@ -36,7 +38,9 @@ describe("EvidenceExcerpt locator switching", () => {
     const chapter = await updateEvidenceExcerpt({ id: excerpt.id, locatorType: "chapter", locator: "Chapter 3" }, project.id);
     const updated = await updateEvidenceExcerpt({ id: chapter.id, locatorType: "page", page: "15" }, project.id);
     const persisted = (await listEvidenceExcerpts({ projectId: project.id, id: excerpt.id }))[0];
-    expect(updated).toMatchObject({ locatorType: "page", page: "15", locator: undefined });
-    expect(persisted).toMatchObject({ locatorType: "page", page: "15", locator: undefined });
+    expect(updated).toMatchObject({ locatorType: "page", page: "15" });
+    expect(updated.locator).toBeUndefined();
+    expect(persisted).toMatchObject({ locatorType: "page", page: "15" });
+    expect(persisted.locator).toBeUndefined();
   });
 });

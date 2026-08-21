@@ -5,7 +5,7 @@
 - 开始分支：`codex/ui-completion-staging-1`
 - 开始 commit：`5de6614ed4ca71ae3b63c18caa20ae688257bf52`
 - 完成分支：`codex/ui-evidence-hotfix-1`
-- 完成 commit：本文件所在的最终 hotfix 提交（以 `git log` 为准）
+- 完成 commit：`c12357b`（本文件所在的最终 hotfix 提交）
 - 本轮未修改 `FormalExportGate`、GenerationService、Claim Coverage、CitationService、Proposal exporter 或 Job / Workflow 并发逻辑。
 
 ## 修复内容
@@ -28,7 +28,7 @@
 - `npm run test:formal-e2e`：通过，formal doctoral proposal E2E 继续通过。
 - `npm run build`：通过。
 - `git diff --check`：通过。
-- GitHub Actions run ID：本分支推送后填写；未完成远端运行前不将本轮表述为远程 CI 已绿。
+- GitHub Actions run ID：`32442820944`；`verify` job `success`，workflow `completed / success`。
 
 ## Deferred findings
 
